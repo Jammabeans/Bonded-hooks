@@ -9,6 +9,14 @@ import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 // MemoryCard: A utility contract for storing and reading arbitrary data (not a Uniswap hook)
 
 contract MemoryCard {
+
+    // storage for deployed contract addresses per user
+    mapping(address => address) private store2;
+
+    // constants for contract creation prefix and length
+    uint256 constant CREATION_PREFIX_INT = 0x60ff600d60003960ff6000f30000000000000000000000000000000000000000;
+    uint8 constant CREATION_PREFIX_LEN = 13;
+
     // Simple key-value store: user => key => value
     mapping(address => mapping(bytes32 => bytes)) private store;
 
@@ -34,14 +42,8 @@ contract MemoryCard {
     // Must be exactly 13 bytes for patching logic
     // Must be exactly 13 bytes for patching logic
     // Must be exactly 13 bytes for patching logic
-    // storage for deployed contract addresses per user
-mapping(address => address) private store2;
-
-// constants for contract creation prefix and length
-uint256 constant CREATION_PREFIX_INT = 0x60ff600d60003960ff6000f30000000000000000000000000000000000000000;
-uint8 constant CREATION_PREFIX_LEN = 13;
-
-function store2write(bytes calldata value) external {
+    
+function saveToRom(bytes calldata value) external {
     require(value.length <= 0xff, "Value too long");
 
     bytes memory creationCode = new bytes(CREATION_PREFIX_LEN + value.length);
@@ -86,7 +88,7 @@ function store2write(bytes calldata value) external {
     store2[msg.sender] = deployed;
 }
 
-function store2read(address user) external view returns (bytes memory) {
+function readFromRom(address user) external view returns (bytes memory) {
     address deployed = store2[user];
     require(deployed != address(0), "No contract stored");
 

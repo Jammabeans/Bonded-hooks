@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
+import {MemoryCard} from "../src/MemoryCard.sol";
 
 import {PoolManager} from "v4-core/PoolManager.sol";
 import {SwapParams, ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol";
@@ -18,7 +19,8 @@ import {ERC1155TokenReceiver} from "solmate/src/tokens/ERC1155.sol";
 
 import "forge-std/console.sol";
 import {MasterControl} from "../src/MasterControl.sol";
-import {PointsMintHook} from "../src/PointsMintHook.sol";
+
+import {PointsCommand} from "../src/PointsCommand.sol";
 
 contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
     MockERC20 token;
@@ -26,7 +28,8 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
     Currency tokenCurrency;
 
     MasterControl masterControl;
-    PointsMintHook pointsMintHook;
+    PointsCommand pointsCommand;
+    MemoryCard memoryCard;
 
     function setUp() public {
         // Deploy PoolManager and Router contracts
@@ -40,6 +43,10 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         token.mint(address(this), 1000 ether);
         token.mint(address(1), 1000 ether);
 
+        // Deploy MemoryCard for config and state
+        memoryCard = new MemoryCard();
+        console.log("MemoryCard deployed at: ", address(memoryCard));
+
         // Deploy MasterControl to an address with AFTER_SWAP_FLAG set
         uint160 flags = uint160(Hooks.ALL_HOOK_MASK);
         console.log("flags Master " , address(flags));
@@ -47,15 +54,22 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         deployCodeTo("MasterControl.sol:MasterControl", abi.encode(manager), address(flags));
         masterControl = MasterControl(address(flags));
 
-        console.log("point 1"); 
+        console.log("point 1");
 
-        // Deploy PointsMintHook
-        pointsMintHook = new PointsMintHook(manager);
+        // Deploy pointsCommand
+        pointsCommand = new PointsCommand();
 
-        console.log("mintHook address: ", address(pointsMintHook)); 
+        // Set up MemoryCard config for PointsCommand
+        // These values can be adjusted as needed for your test logic
+        address memoryCardAddr = address(memoryCard);
+        pointsCommand.setBonusThreshold(memoryCardAddr, 0); // No threshold for bonus
+        pointsCommand.setBonusPercent(memoryCardAddr, 0);   // No bonus percent
+        pointsCommand.setBasePointsPercent(memoryCardAddr, 20); // 20% base points
 
-        // Register PointsMintHook with MasterControl for afterSwap
-      // masterControl.addHook("afterSwap", address(pointsMintHook), "Points Mint Hook");
+        console.log("mintHook address: ", address(pointsCommand));
+
+        // Register pointsCommand with MasterControl for afterSwap
+      // masterControl.addHook("afterSwap", address(pointsCommand), "Points Mint Hook");
 
         // Approve TOKEN for spending on routers
         token.approve(address(swapRouter), type(uint256).max);
@@ -95,17 +109,63 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
             }),
             ZERO_BYTES
         );
+
+         // ---------- Register pointsCommand as afterSwap command in MasterControl ---------
+        MasterControl.Command[] memory commands = new MasterControl.Command[](1);
+
+        commands[0] = MasterControl.Command({
+            target: address(pointsCommand),
+            selector: pointsCommand.afterSwap.selector,
+            data: "", // input will be provided as hookData at swap time
+            callType: MasterControl.CallType.Delegate
+        });
+
+        bytes32 poolKeyHash = keccak256(abi.encode(key));
+        bytes32 hookPath = keccak256(
+            abi.encodePacked(
+                "afterSwap",
+                key.currency0,
+                key.currency1,
+                key.fee,
+                key.tickSpacing,
+                key.hooks
+            )
+        );
+
+        masterControl.setCommands(poolKeyHash, hookPath, commands);
+
     }
 
     function test_swap_mints_points() public {
         uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
-        uint256 pointsBalanceOriginal = pointsMintHook.balanceOf(
+        uint256 pointsBalanceOriginal = masterControl.balanceOf(
             address(this),
             poolIdUint
         );
 
-        // Set user address in hook data
-        bytes memory hookData = abi.encode(address(this));
+        // Prepare AfterSwapInput for PointsCommand
+        PointsCommand.AfterSwapInput memory afterSwapInput = PointsCommand.AfterSwapInput({
+            memoryCardAddr: address(memoryCard),
+            pointsTokenAddr: address(masterControl),
+            poolId: uint256(PoolId.unwrap(key.toId())),
+            user: address(this),
+            amount0: -0.001 ether,
+            amount1: 0, // This can be set to the expected output amount if needed
+            swapParams: "" // Not used in PointsCommand logic
+        });
+        bytes memory hookData = abi.encode(afterSwapInput);
+        // Debug: log encoded AfterSwapInput
+        console.log("Encoded AfterSwapInput length: ", hookData.length);
+        if (hookData.length >= 32) {
+            bytes32 word0;
+            assembly { word0 := mload(add(hookData, 0x20)) }
+            console.logBytes32(word0);
+        }
+        if (hookData.length >= 64) {
+            bytes32 word1;
+            assembly { word1 := mload(add(hookData, 0x40)) }
+            console.logBytes32(word1);
+        }
 
         console.log("point 2");
 
@@ -124,11 +184,14 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
             hookData
         );
         
-        uint256 pointsBalanceAfterSwap = pointsMintHook.balanceOf(
+        uint256 pointsBalanceAfterSwap = masterControl.balanceOf(
             address(this),
             poolIdUint
         );
+        console.log("poolIdUint: ", poolIdUint);
+        console.log("address.this: ", address(this));
         console.log("pointsBalanceAfterSwap: ", pointsBalanceAfterSwap);
-       // assertEq(pointsBalanceAfterSwap - pointsBalanceOriginal, 2 * 10 ** 14);
+        // Uncomment and adjust the assertion as needed for your points logic
+        // assertEq(pointsBalanceAfterSwap - pointsBalanceOriginal, 2 * 10 ** 14);
     }
 }

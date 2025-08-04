@@ -77,29 +77,29 @@ contract MemoryCardTest is Test {
         assertEq(result.length, 0, "Memory store: clear failed");
     }
 
-    function testStore2WriteAndRead() public {
-        _testStore2WriteAndRead(keccak256("foo2"), DATA1);
-        _testStore2WriteAndRead(keccak256("bar2"), DATA2);
-        _testStore2WriteAndRead(keccak256("baz2"), DATA3);
-        _testStore2WriteAndRead(keccak256("qux2"), DATA4);
-        _testStore2WriteAndRead(keccak256("empty2"), DATA5);
-        _testStore2WriteAndRead(keccak256("long1"), DATA6);
-        _testStore2WriteAndRead(keccak256("long2"), DATA7);
-        _testStore2WriteAndRead(keccak256("long3"), DATA8);
-        _testStore2WriteAndRead(keccak256("long4"), DATA9);
+    function testsaveToRomAndRead() public {
+        _testsaveToRomAndRead(keccak256("foo2"), DATA1);
+        _testsaveToRomAndRead(keccak256("bar2"), DATA2);
+        _testsaveToRomAndRead(keccak256("baz2"), DATA3);
+        _testsaveToRomAndRead(keccak256("qux2"), DATA4);
+        _testsaveToRomAndRead(keccak256("empty2"), DATA5);
+        _testsaveToRomAndRead(keccak256("long1"), DATA6);
+        _testsaveToRomAndRead(keccak256("long2"), DATA7);
+        _testsaveToRomAndRead(keccak256("long3"), DATA8);
+        _testsaveToRomAndRead(keccak256("long4"), DATA9);
         // DATA10 is 256 bytes, should revert
         //vm.expectRevert("Value too long for this creation code");
-        //card.store2write(keccak256( DATA10);
+        //card.saveToRom(keccak256( DATA10);
     }
 
-    function _testStore2WriteAndRead(bytes32 key, bytes memory runtime) internal {
+    function _testsaveToRomAndRead(bytes32 key, bytes memory runtime) internal {
         uint256 gasBefore = gasleft();
-        card.store2write( runtime);
+        card.saveToRom( runtime);
         uint256 gasAfterWrite = gasleft();
         uint256 gasUsedWrite = gasBefore - gasAfterWrite;
 
         gasBefore = gasleft();
-        bytes memory code = card.store2read(address(this));
+        bytes memory code = card.readFromRom(address(this));
         uint256 gasAfterRead = gasleft();
         uint256 gasUsedRead = gasBefore - gasAfterRead;
 
@@ -122,16 +122,16 @@ contract MemoryCardTest is Test {
         _testStore2Clear(keccak256("long2"), DATA7);
         _testStore2Clear(keccak256("long3"), DATA8);
         _testStore2Clear(keccak256("long4"), DATA9);
-        // DATA10 is 256 bytes, should revert on store2write
+        // DATA10 is 256 bytes, should revert on saveToRom
         ///vm.expectRevert("Value too long for this creation code");
-        //card.store2write(keccak256("toolong2"), DATA10);
+        //card.saveToRom(keccak256("toolong2"), DATA10);
     }
 
     function _testStore2Clear(bytes32 key, bytes memory runtime) internal {
-        card.store2write( runtime);
+        card.saveToRom( runtime);
         card.store2clear();
         // After clear, should revert on read
         vm.expectRevert("No contract stored");
-        card.store2read(address(this));
+        card.readFromRom(address(this));
     }
 }

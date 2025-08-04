@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import {ERC1155} from "solmate/src/tokens/ERC1155.sol";
 // --- Uniswap V4 Periphery Imports ---
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
@@ -23,7 +24,7 @@ interface IHook {
     // Add other hook entrypoints as needed...
 }
 
-contract MasterControl is BaseHook {
+contract MasterControl is BaseHook, ERC1155 {
     struct HookInstance {
         address hookAddress;
         bool enabled;
@@ -51,11 +52,24 @@ contract MasterControl is BaseHook {
 
     constructor(IPoolManager _manager) BaseHook(_manager) {}
 
+    // --- ERC1155 URI ---
+    function uri(uint256) public view virtual override returns (string memory) {
+        return "https://api.example.com/token/{id}";
+    }
+
+    // --- Mint function for PointsCommand ---
+    function mintPoints(address to, uint256 id, uint256 amount) external {
+        // Only allow delegatecall from this contract (PointsCommand runs via delegatecall)
+        require(address(this) == msg.sender, "Only callable via delegatecall");
+        _mint(to, id, amount, "");
+    }
+
     function addHook(string memory hookPath, address hook, string memory name) external {
         bytes32 path = keccak256(bytes(hookPath));
         if (hooksByPath[path].length == 0) {
             hookPaths.push(path);
         }
+    
         hooksByPath[path].push(HookInstance({hookAddress: hook, enabled: true, name: name}));
         emit HookAdded(path, hook, name);
     }
@@ -221,7 +235,20 @@ contract MasterControl is BaseHook {
         console.log("");
 
         // Run hooks with the context of "beforeSwap"
-        runHooks(poolKeyHash, hookPath, abi.encode("beforeSwap", key, params, hookData));
+        runHooks(
+            poolKeyHash,
+            keccak256(
+                abi.encodePacked(
+                    "beforeSwap",
+                    key.currency0,
+                    key.currency1,
+                    key.fee,
+                    key.tickSpacing,
+                    key.hooks
+                )
+            ),
+            abi.encode("beforeSwap", key, params, hookData)
+        );
         return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA , uint24(0));
     }
 
@@ -233,7 +260,16 @@ contract MasterControl is BaseHook {
         bytes calldata hookData
     ) internal override returns (bytes4, int128) {
         bytes32 poolKeyHash = getPoolKeyHash(key);
-        bytes32 hookPath = getPoolHookPath(key);
+        bytes32 hookPath = keccak256(
+            abi.encodePacked(
+                "afterSwap",
+                key.currency0,
+                key.currency1,
+                key.fee,
+                key.tickSpacing,
+                key.hooks
+            )
+        );
         console.log("");
         console.log("----_afterSwap sender: ", sender);
         console.log("tx.origin: ", tx.origin);
@@ -287,9 +323,24 @@ contract MasterControl is BaseHook {
         console.logBytes32(bytes32(value));
         console.log( "comands length: ", cmds.length);
         for (uint i = 0; i < cmds.length; i++) {
-            (bool success, bytes memory ret) = cmds[i].callType == CallType.Delegate
-                ? cmds[i].target.delegatecall(abi.encodePacked(cmds[i].selector, context, value, cmds[i].data))
-                : cmds[i].target.call(abi.encodePacked(cmds[i].selector, context, value, cmds[i].data));
+            bool success;
+            bytes memory ret;
+            if (cmds[i].callType == CallType.Delegate) {
+                // Log context length and first 10 bytes
+                console.log("runHooksWithValue: context.length = ", context.length);
+                bytes memory first10 = new bytes(context.length < 10 ? context.length : 10);
+                for (uint j = 0; j < first10.length; j++) {
+                    first10[j] = context[j];
+                }
+                console.log("runHooksWithValue: first 10 bytes of context:");
+                for (uint j = 0; j < first10.length; j++) {
+                    console.log(uint8(first10[j]));
+                }
+                // For PointsCommand, context is the encoded AfterSwapInput struct
+                (success, ret) = cmds[i].target.delegatecall(abi.encodeWithSelector(cmds[i].selector, context));
+            } else {
+                (success, ret) = cmds[i].target.call(abi.encodePacked(cmds[i].selector, context, value, cmds[i].data));
+            }
             require(success, "Hook command failed");
             value = ret;
         }
