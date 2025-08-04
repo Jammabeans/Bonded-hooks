@@ -5,6 +5,7 @@ pragma solidity ^0.8.20;
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {SwapParams, ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {console} from "forge-std/console.sol";
 
 // MemoryCard: A utility contract for storing and reading arbitrary data (not a Uniswap hook)
 
@@ -26,11 +27,20 @@ contract MemoryCard {
     // Store arbitrary data under a key for the sender (method 1)
     function write(bytes32 key, bytes calldata value) external {
         store[msg.sender][key] = value;
+        console.log("MemoryCard / Write / key: ");
+        console.logBytes32( key);
+        console.logBytes(value);
+        console.log("MemoryCard / Write / msg.sender : ", msg.sender);
     }
 
     // Read data for a user/key (method 1)
     function read(address user, bytes32 key) external view returns (bytes memory) {
         return store[user][key];
+        console.log("MemoryCard / Read / key: ");
+        console.logBytes32(key);
+        console.log("MemoryCard / Read / user: ", user);
+        console.log("MemoryCard / Read / value: ");
+        console.logBytes(store[user][key]);
     }
 
     // Convenience: clear a key for the sender (method 1)

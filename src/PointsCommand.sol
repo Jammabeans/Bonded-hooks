@@ -95,9 +95,9 @@ contract PointsCommand {
         IMemoryCard mc = IMemoryCard(memoryCardAddr);
 
         // Read all params from MemoryCard (could also allow them in input to save gas)
-        uint256 threshold = toUint256(mc.read(msg.sender, KEY_BONUS_THRESHOLD));
-        uint256 bonusPercent = toUint256(mc.read(msg.sender, KEY_BONUS_PERCENT));
-        uint256 basePointsPercent = toUint256(mc.read(msg.sender, KEY_BASE_POINTS_PERCENT));
+        uint256 threshold = toUint256(mc.read(address(this), KEY_BONUS_THRESHOLD));
+        uint256 bonusPercent = toUint256(mc.read(address(this), KEY_BONUS_PERCENT));
+        uint256 basePointsPercent = toUint256(mc.read(address(this), KEY_BASE_POINTS_PERCENT));
         console.log("Loaded config from MemoryCard:");
         console.log("  threshold: ", threshold);
         console.log("  bonusPercent: ", bonusPercent);
@@ -110,7 +110,7 @@ contract PointsCommand {
         }
 
         uint256 ethSpendAmount = uint256(-amount0);
-        uint256 pointsForSwap = (ethSpendAmount * 20) / 100;
+        uint256 pointsForSwap = (ethSpendAmount * basePointsPercent) / 100;
         console.log("ethSpendAmount: ", ethSpendAmount);
         console.log("pointsForSwap (before bonus): ", pointsForSwap);
 

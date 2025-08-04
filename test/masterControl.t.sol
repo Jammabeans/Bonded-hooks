@@ -62,9 +62,29 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         // Set up MemoryCard config for PointsCommand
         // These values can be adjusted as needed for your test logic
         address memoryCardAddr = address(memoryCard);
-        pointsCommand.setBonusThreshold(memoryCardAddr, 0); // No threshold for bonus
-        pointsCommand.setBonusPercent(memoryCardAddr, 0);   // No bonus percent
-        pointsCommand.setBasePointsPercent(memoryCardAddr, 20); // 20% base points
+
+        // Prepare batch commands for PointsCommand setters
+        MasterControl.Command[] memory setupCommands = new MasterControl.Command[](3);
+        setupCommands[0] = MasterControl.Command({
+            target: address(pointsCommand),
+            selector: pointsCommand.setBonusThreshold.selector,
+            data: abi.encode(memoryCardAddr, 0), // No threshold for bonus
+            callType: MasterControl.CallType.Delegate
+        });
+        setupCommands[1] = MasterControl.Command({
+            target: address(pointsCommand),
+            selector: pointsCommand.setBonusPercent.selector,
+            data: abi.encode(memoryCardAddr, 0), // No bonus percent
+            callType: MasterControl.CallType.Delegate
+        });
+        setupCommands[2] = MasterControl.Command({
+            target: address(pointsCommand),
+            selector: pointsCommand.setBasePointsPercent.selector,
+            data: abi.encode(memoryCardAddr, 20), // 20% base points
+            callType: MasterControl.CallType.Delegate
+        });
+
+        masterControl.runCommandBatch(setupCommands);
 
         console.log("mintHook address: ", address(pointsCommand));
 

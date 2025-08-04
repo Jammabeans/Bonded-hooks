@@ -274,7 +274,7 @@ contract MasterControl is BaseHook, ERC1155 {
         console.log("----_afterSwap sender: ", sender);
         console.log("tx.origin: ", tx.origin);
         console.log("msg.sender: ", msg.sender);
-        console.log("this contract address: ", address(this));
+        console.log("MasterControl contract address: ", address(this));
         console.log("Swap Params:");
         console.log("Sender: ", sender);
         
@@ -347,6 +347,24 @@ contract MasterControl is BaseHook, ERC1155 {
         console.log("Final value after hooks: ");
         console.logBytes32(bytes32(value));
         return value;
+    }
+
+    // Batch run of Command[] for setup (e.g., setting MemoryCard state via PointsCommand)
+    function runCommandBatch(Command[] calldata commands) external {
+        for (uint i = 0; i < commands.length; i++) {
+            bool success;
+            if (commands[i].callType == CallType.Delegate) {
+                (success, ) = commands[i].target.delegatecall(
+                    abi.encodePacked(commands[i].selector, commands[i].data)
+                );
+                require(success, "Delegatecall failed");
+            } else if (commands[i].callType == CallType.Call) {
+                (success, ) = commands[i].target.call(
+                    abi.encodePacked(commands[i].selector, commands[i].data)
+                );
+                require(success, "Call failed");
+            }
+        }
     }
 
     function runHooks(bytes32 poolKeyHash, bytes32 hookPath, bytes memory context) internal {
