@@ -68,13 +68,13 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         setupCommands[0] = MasterControl.Command({
             target: address(pointsCommand),
             selector: pointsCommand.setBonusThreshold.selector,
-            data: abi.encode(memoryCardAddr, 0), // No threshold for bonus
+            data: abi.encode(memoryCardAddr, 0.0002 ether), // threshold for bonus
             callType: MasterControl.CallType.Delegate
         });
         setupCommands[1] = MasterControl.Command({
             target: address(pointsCommand),
             selector: pointsCommand.setBonusPercent.selector,
-            data: abi.encode(memoryCardAddr, 0), // No bonus percent
+            data: abi.encode(memoryCardAddr, 20), // bonus percent
             callType: MasterControl.CallType.Delegate
         });
         setupCommands[2] = MasterControl.Command({
