@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "forge-std/console.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {PoolId} from "v4-core/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
@@ -40,109 +39,65 @@ contract PointsCommand {
         bytes swapParams; // if needed, or parse as more fields
     }
 
-    // Called by dispatcher (via delegatecall) with abi.encoded AfterSwapInput (or similar struct)
-    function afterSwap(bytes calldata input) external {
-        // Top-level debug log
-        console.log("PointsCommand.afterSwap ENTRY");
-        console.log("input.length: ", input.length);
+    // Typed entrypoint for dispatcher (MasterControl will call this via delegatecall).
+    // Signature: afterSwap(address sender, PoolKey calldata key, SwapParams calldata params, BalanceDelta delta, bytes calldata hookData, bytes calldata extra)
+    // Returns an int128 (optional), encoded by the callee. Commands that do not need to return a value can return 0.
+    function afterSwap(
+        address sender,
+        PoolKey calldata key,
+        SwapParams calldata params,
+        BalanceDelta delta,
+        bytes calldata hookData,
+        bytes calldata extra
+    ) external returns (int128) {
 
-        // Log first 64 bytes of input as hex for debugging
-        // Log first 10 words of input for debugging
-        for (uint i = 0; i < 19 && input.length >= (i+1)*32; i++) {
-            bytes32 w;
-            w = bytes32(input[i*32:(i+1)*32]);
-            console.log("input word", i, ":");
-            console.logBytes32(w);
-        }
+        // Require hookData to be present for this command's operation (MasterControl/test provides it).
+        require(hookData.length > 0, "PointsCommand.afterSwap: missing hookData");
 
-        // Try to decode input, log error if fails
-        // Decode as (string, PoolKey, SwapParams, bytes)
-        // Extract memoryCard address from word 14 and user address from word 17
-        address memoryCardAddr;
-        address user;
-        if (input.length >= 18 * 32) {
-            // Extract memoryCardAddr (word 14)
-            bytes32 memCardWord;
-            for (uint i = 0; i < 32; i++) {
-                memCardWord |= bytes32(input[14*32 + i] & 0xFF) >> (i * 8);
-            }
-            memoryCardAddr = address(uint160(uint256(memCardWord)));
-            // Extract user (word 17)
-            bytes32 userWord;
-            for (uint i = 0; i < 32; i++) {
-                userWord |= bytes32(input[17*32 + i] & 0xFF) >> (i * 8);
-            }
-            user = address(uint160(uint256(userWord)));
-            console.log("Extracted memoryCardAddr (word 14): ", memoryCardAddr);
-            console.log("Extracted user (word 17): ", user);
-        } else {
-            console.log("Input too short to extract memoryCardAddr and user");
-            return;
-        }
-        // Use amountSpecified from SwapParams (word 7 or 18 depending on struct layout)
-        int256 amount0 = 0;
-        if (input.length >= 8 * 32) {
-            // Extract amount0 (word 7)
-            bytes32 amtWord;
-            for (uint i = 0; i < 32; i++) {
-                amtWord |= bytes32(input[7*32 + i] & 0xFF) >> (i * 8);
-            }
-            amount0 = int256(uint256(amtWord));
-            console.log("Extracted amount0 (word 7): ", amount0);
-        }
-        uint256 poolId = 0; // Set as needed
+        // Decode authoritative AfterSwapInput from hookData. If malformed, revert.
+        AfterSwapInput memory input = abi.decode(hookData, (AfterSwapInput));
 
-        IMemoryCard mc = IMemoryCard(memoryCardAddr);
+        // Use memoryCard address from the decoded input (delegatecall context => address(this) == MasterControl)
+        IMemoryCard mc = IMemoryCard(input.memoryCardAddr);
+ 
+        // Derive poolKeyHash from the PoolKey param so settings are per-pool
+        bytes32 poolKeyHash = keccak256(abi.encode(key));
+        bytes32 thresholdKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolKeyHash));
+        bytes32 bonusKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolKeyHash));
+        bytes32 basePointsKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolKeyHash));
+ 
+        // Read per-pool config from MemoryCard under this contract's caller slot (delegatecall context => address(this) == MasterControl)
+        uint256 threshold = toUint256(mc.read(address(this), thresholdKey));
+        uint256 bonusPercent = toUint256(mc.read(address(this), bonusKey));
+        uint256 basePointsPercent = toUint256(mc.read(address(this), basePointsKey));
 
-        // Read all params from MemoryCard (could also allow them in input to save gas)
-        uint256 threshold = toUint256(mc.read(address(this), KEY_BONUS_THRESHOLD));
-        uint256 bonusPercent = toUint256(mc.read(address(this), KEY_BONUS_PERCENT));
-        uint256 basePointsPercent = toUint256(mc.read(address(this), KEY_BASE_POINTS_PERCENT));
-        console.log("Loaded config from MemoryCard:");
-        console.log("  threshold: ", threshold);
-        console.log("  bonusPercent: ", bonusPercent);
-        console.log("  basePointsPercent: ", basePointsPercent);
+        // Use explicit amount from the decoded input (authoritative)
+        int256 amount0 = input.amount0;
 
-        // Only run if a valid "buy" (positive amount ETH spent)
+        // Only run for buys (negative amount0 indicates ETH spent)
         if (amount0 >= 0) {
-            console.log("Not a buy (amount0 >= 0), skipping");
-            return;
+            return int128(0);
         }
 
         uint256 ethSpendAmount = uint256(-amount0);
         uint256 pointsForSwap = (ethSpendAmount * basePointsPercent) / 100;
-        console.log("ethSpendAmount: ", ethSpendAmount);
-        console.log("pointsForSwap (before bonus): ", pointsForSwap);
 
-        if (ethSpendAmount >= threshold) {
+        if (ethSpendAmount >= threshold && bonusPercent > 0) {
             uint256 bonusPoints = (pointsForSwap * bonusPercent) / 100;
             pointsForSwap += bonusPoints;
-            console.log("Bonus applied, bonusPoints: ", bonusPoints);
         }
 
-        // Mint points via MasterControl's ERC1155 (delegatecall context)
-        // Extract poolId from PoolKey (words 2–6) or set as needed
-        // For now, use word 16 as poolId (if that's the PoolKey hash)
-        uint256 extractedPoolId = 0;
-        if (input.length >= 17 * 32) {
-            bytes32 poolIdWord;
-            for (uint i = 0; i < 32; i++) {
-                poolIdWord |= bytes32(input[16*32 + i] & 0xFF) >> (i * 8);
-            }
-            extractedPoolId = uint256(poolIdWord);
-            console.log("Extracted poolId (word 16): ", extractedPoolId);
-        }
+        // Determine poolId to use as token id — prefer the explicit input.poolId
+        uint256 tokenId = input.poolId;
+
         if (pointsForSwap > 0) {
-            // This will call MasterControl's mintPoints via delegatecall context
-            console.log("Calling mintPoints:");
-            console.log("  user: ", user);
-            console.log("  poolId: ", extractedPoolId);
-            console.log("  pointsForSwap: ", pointsForSwap);
-            _mintDelegate(user, extractedPoolId, pointsForSwap);
+            // Mint points via MasterControl's mintPoints (will be called from delegatecall context)
+            _mintDelegate(input.user, tokenId, pointsForSwap);
         } else {
-            console.log("No points to mint");
         }
 
+        // No meaningful int128 to return; return 0 for compatibility
+        return int128(0);
     }
     function _mintDelegate(address to, uint256 id, uint256 amount) internal {
         // Call the ERC1155 _mint function in the delegatecall context (MasterControl)
@@ -157,16 +112,25 @@ contract PointsCommand {
 
     // --- Stateless admin "setters"/"getters" (callable via dispatcher with encoded input) ---
 
-    function setBonusThreshold(address memoryCardAddr, uint256 newThreshold) external {
-        IMemoryCard(memoryCardAddr).write(KEY_BONUS_THRESHOLD, abi.encode(newThreshold));
+    function setBonusThreshold(bytes calldata data) external {
+        // Expect encoded (address memoryCardAddr, bytes32 poolKeyHash, uint256 newThreshold)
+        (address memoryCardAddr, bytes32 poolKeyHash, uint256 newThreshold) = abi.decode(data, (address, bytes32, uint256));
+        bytes32 storageKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolKeyHash));
+        IMemoryCard(memoryCardAddr).write(storageKey, abi.encode(newThreshold));
     }
 
-    function setBonusPercent(address memoryCardAddr, uint256 newPercent) external {
-        IMemoryCard(memoryCardAddr).write(KEY_BONUS_PERCENT, abi.encode(newPercent));
+    function setBonusPercent(bytes calldata data) external {
+        // Expect encoded (address memoryCardAddr, bytes32 poolKeyHash, uint256 newPercent)
+        (address memoryCardAddr, bytes32 poolKeyHash, uint256 newPercent) = abi.decode(data, (address, bytes32, uint256));
+        bytes32 storageKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolKeyHash));
+        IMemoryCard(memoryCardAddr).write(storageKey, abi.encode(newPercent));
     }
 
-    function setBasePointsPercent(address memoryCardAddr, uint256 newPercent) external {
-        IMemoryCard(memoryCardAddr).write(KEY_BASE_POINTS_PERCENT, abi.encode(newPercent));
+    function setBasePointsPercent(bytes calldata data) external {
+        // Expect encoded (address memoryCardAddr, bytes32 poolKeyHash, uint256 newPercent)
+        (address memoryCardAddr, bytes32 poolKeyHash, uint256 newPercent) = abi.decode(data, (address, bytes32, uint256));
+        bytes32 storageKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolKeyHash));
+        IMemoryCard(memoryCardAddr).write(storageKey, abi.encode(newPercent));
     }
 
     // This function will resolve to MasterControl's mintPoints via delegatecall

@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {PoolLaunchPad} from "../src/PoolLaunchPad.sol";
+import {AccessControl} from "../src/AccessControl.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
 import {PoolId} from "v4-core/types/PoolId.sol";
@@ -14,12 +15,14 @@ import {Currency} from "v4-core/types/Currency.sol";
 
 contract PoolLaunchPadTest is Test, Deployers {
     PoolLaunchPad launchpad;
+    AccessControl accessControl;
 
     function setUp() public {
         // Deploy manager and test routers (sets up modifyLiquidityRouter, etc.)
         deployFreshManagerAndRouters();
-        // Deploy the launchpad with the test manager
-        launchpad = new PoolLaunchPad(manager);
+        // Deploy AccessControl and the launchpad with the test manager
+        accessControl = new AccessControl();
+        launchpad = new PoolLaunchPad(manager, accessControl);
     }
 
     // Small smoke tests for each launchpad path (initialization only).

@@ -11,6 +11,7 @@ import {SwapParams, ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {console} from "forge-std/console.sol";
+import {AccessControl} from "./AccessControl.sol";
 
 // --- Hook Interface for Dispatch ---
 interface IHook {
@@ -46,11 +47,19 @@ contract MasterControl is BaseHook, ERC1155 {
     mapping(bytes32 => HookInstance[]) private hooksByPath;
     bytes32[] public hookPaths;
 
+    // Access control registry (maps poolKeyHash => admin)
+    AccessControl public accessControl;
+
     event HookAdded(bytes32 indexed hookPath, address indexed hook, string name);
     event HookToggled(bytes32 indexed hookPath, address indexed hook, bool enabled);
-    event CommandsSet(bytes32 indexed poolKeyHash, bytes32 indexed hookPath, Command[] commands);
+    event CommandsSet(bytes32 indexed poolKeyHash, bytes32 indexed hookPath, bytes32 commandsHash);
 
     constructor(IPoolManager _manager) BaseHook(_manager) {}
+    
+    /// @notice Set the AccessControl contract address (only callable by the pool manager)
+    function setAccessControl(address _accessControl) external onlyPoolManager {
+        accessControl = AccessControl(_accessControl);
+    }
 
     // --- ERC1155 URI ---
     function uri(uint256) public view virtual override returns (string memory) {
@@ -64,7 +73,13 @@ contract MasterControl is BaseHook, ERC1155 {
         _mint(to, id, amount, "");
     }
 
-    function addHook(string memory hookPath, address hook, string memory name) external {
+    function addHook(PoolKey calldata key, string memory hookPath, address hook, string memory name) external {
+        // Compute poolKeyHash from typed PoolKey to prevent arbitrary poolKeyHash spoofing
+        bytes32 poolKeyHash = getPoolKeyHash(key);
+        // Only pool admin for poolKeyHash may register hooks (scoped by pool)
+        require(address(accessControl) != address(0), "AccessControl not configured");
+        require(accessControl.getPoolAdmin(poolKeyHash) == msg.sender, "MasterControl: not pool admin");
+ 
         bytes32 path = keccak256(bytes(hookPath));
         if (hooksByPath[path].length == 0) {
             hookPaths.push(path);
@@ -74,7 +89,11 @@ contract MasterControl is BaseHook, ERC1155 {
         emit HookAdded(path, hook, name);
     }
 
-    function setHookEnabled(string memory hookPath, address hook, bool enabled) external {
+    function setHookEnabled(PoolKey calldata key, string memory hookPath, address hook, bool enabled) external {
+        bytes32 poolKeyHash = getPoolKeyHash(key);
+        require(address(accessControl) != address(0), "AccessControl not configured");
+        require(accessControl.getPoolAdmin(poolKeyHash) == msg.sender, "MasterControl: not pool admin");
+ 
         bytes32 path = keccak256(bytes(hookPath));
         HookInstance[] storage arr = hooksByPath[path];
         for (uint i = 0; i < arr.length; i++) {
@@ -128,44 +147,47 @@ contract MasterControl is BaseHook, ERC1155 {
     function _beforeInitialize(
         address sender,
         PoolKey calldata key,
-        uint160
+        uint160 sqrtPriceX96
     ) internal override returns (bytes4) {
         bytes32 hookPath = getPoolHookPath(key);
         bytes32 poolKeyHash = getPoolKeyHash(key);
-        runHooks(poolKeyHash, hookPath, abi.encode("beforeInitialize", key, ""));
+        // Forward full typed parameters to hook commands: sender, key, sqrtPriceX96
+        runHooks_BeforeInitialize(poolKeyHash, hookPath, sender, key, sqrtPriceX96);
         return this.beforeInitialize.selector;
     }
-
+ 
     function _afterInitialize(
         address sender,
         PoolKey calldata key,
-        uint160,
-        int24
+        uint160 sqrtPriceX96,
+        int24 tick
     ) internal override returns (bytes4) {
         bytes32 hookPath = getPoolHookPath(key);
         bytes32 poolKeyHash = getPoolKeyHash(key);
-        runHooks(poolKeyHash, hookPath, abi.encode("afterInitialize", key, ""));
+        // Forward full typed parameters to hook commands: sender, key, sqrtPriceX96, tick
+        runHooks_AfterInitialize(poolKeyHash, hookPath, sender, key, sqrtPriceX96, tick);
         return this.afterInitialize.selector;
     }
-
+ 
     // 2. Add Liquidity Hooks
-
+ 
     function _beforeAddLiquidity(address sender, PoolKey calldata key, ModifyLiquidityParams calldata params, bytes calldata hookData) internal override returns (bytes4) {
         bytes32 hookPath = getPoolHookPath(key);
         bytes32 poolKeyHash = getPoolKeyHash(key);
         console.log("----_beforeAddLiquidity sender: ", sender);
         console.log("tx.origin: ", tx.origin);
         console.log("msg.sender: ", msg.sender);
-        
-        runHooks(poolKeyHash, hookPath, abi.encode("beforeAddLiquidity", key, params, hookData));
+ 
+        // Forward sender + typed args
+        runHooks_BeforeAddLiquidity(poolKeyHash, hookPath, sender, key, params, hookData);
         return (this.beforeAddLiquidity.selector);
     }
-
+ 
     function _afterAddLiquidity(
         address sender,
         PoolKey calldata key,
         ModifyLiquidityParams calldata params,
-        BalanceDelta,
+        BalanceDelta /*unusedPreDelta*/,
         BalanceDelta delta,
         bytes calldata hookData
     ) internal override returns (bytes4, BalanceDelta) {
@@ -174,14 +196,13 @@ contract MasterControl is BaseHook, ERC1155 {
         console.log("----_afterAddLiquidity sender: ", sender);
         console.log("tx.origin: ", tx.origin);
         console.log("msg.sender: ", msg.sender);
-        // Encode delta as bytes, pass through runHooksWithValue, decode result
-        bytes memory result_ = runHooksWithValue(poolKeyHash, hookPath, abi.encode("afterAddLiquidity", key, params, hookData), abi.encode(delta));
-        BalanceDelta updatedDelta = abi.decode(result_, (BalanceDelta));
+        // Build full context including the BalanceDelta so delegate targets that parse bytes can extract it
+        BalanceDelta updatedDelta = runHooks_AfterAddLiquidity(poolKeyHash, hookPath, sender, key, params, delta, hookData);
         return (this.afterAddLiquidity.selector, updatedDelta);
     }
-
+ 
     // 3. Remove Liquidity Hooks
-
+ 
     function _beforeRemoveLiquidity(
         address sender,
         PoolKey calldata key,
@@ -193,16 +214,16 @@ contract MasterControl is BaseHook, ERC1155 {
         console.log("----_beforeRemoveLiquidity sender: ", sender);
         console.log("tx.origin: ", tx.origin);
         console.log("msg.sender: ", msg.sender);
-        runHooks(poolKeyHash, hookPath, abi.encode("beforeRemoveLiquidity", key, params, hookData));
+        runHooks_BeforeRemoveLiquidity(poolKeyHash, hookPath, sender, key, params, hookData);
         return (this.beforeRemoveLiquidity.selector);
     }
-
+ 
     function _afterRemoveLiquidity(
         address sender,
         PoolKey calldata key,
         ModifyLiquidityParams calldata params,
         BalanceDelta delta,
-        BalanceDelta,
+        BalanceDelta /*unused*/,
         bytes calldata hookData
     ) internal override returns (bytes4, BalanceDelta) {
         bytes32 poolKeyHash = getPoolKeyHash(key);
@@ -210,17 +231,25 @@ contract MasterControl is BaseHook, ERC1155 {
         console.log("----_afterRemoveLiquidity sender: ", sender);
         console.log("tx.origin: ", tx.origin);
         console.log("msg.sender: ", msg.sender);
-        bytes memory result_ = runHooksWithValue(poolKeyHash, hookPath, abi.encode("afterRemoveLiquidity", key, params, hookData), abi.encode(delta));
-        BalanceDelta updatedDelta = abi.decode(result_, (BalanceDelta));
+        BalanceDelta updatedDelta = runHooks_AfterRemoveLiquidity(poolKeyHash, hookPath, sender, key, params, delta, hookData);
         return (this.afterRemoveLiquidity.selector, updatedDelta);
     }
-
+ 
     // 4. Swap Hooks
-
+ 
     function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal override returns (bytes4, BeforeSwapDelta , uint24) {
-        bytes32 hookPath = getPoolHookPath(key);
         bytes32 poolKeyHash = getPoolKeyHash(key);
+        bytes32 hookPath = keccak256(
+            abi.encodePacked(
+                "beforeSwap",
+                key.currency0,
+                key.currency1,
+                key.fee,
+                key.tickSpacing,
+                key.hooks
+            )
+        );
         console.log("");
         console.log("----_beforeSwap sender: ", sender);
         console.log("tx.origin: ", tx.origin);
@@ -233,25 +262,12 @@ contract MasterControl is BaseHook, ERC1155 {
         console.log("Hook Path: ");
         console.logBytes32(getPoolHookPath(key));
         console.log("");
-
-        // Run hooks with the context of "beforeSwap"
-        runHooks(
-            poolKeyHash,
-            keccak256(
-                abi.encodePacked(
-                    "beforeSwap",
-                    key.currency0,
-                    key.currency1,
-                    key.fee,
-                    key.tickSpacing,
-                    key.hooks
-                )
-            ),
-            abi.encode("beforeSwap", key, params, hookData)
-        );
-        return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA , uint24(0));
+ 
+        // Forward structured args to typed hook runners
+        (BeforeSwapDelta _bsd, uint24 _u) = runHooks_BeforeSwap(poolKeyHash, hookPath, sender, key, params, hookData);
+        return (this.beforeSwap.selector, _bsd , _u);
     }
-
+ 
     function _afterSwap(
         address sender,
         PoolKey calldata key,
@@ -277,7 +293,7 @@ contract MasterControl is BaseHook, ERC1155 {
         console.log("MasterControl contract address: ", address(this));
         console.log("Swap Params:");
         console.log("Sender: ", sender);
-        
+ 
         console.log("Pool Key Hash: ");
         console.logBytes32( getPoolKeyHash(key));
         console.log("Hook Path: ");
@@ -288,26 +304,25 @@ contract MasterControl is BaseHook, ERC1155 {
         console.log("Balance Delta - Amount 0: ", delta.amount0());
         console.log("Balance Delta - Amount 1: ", delta.amount1());
         console.log("");
-        bytes memory result_ = runHooksWithValue(poolKeyHash, hookPath, abi.encode("afterSwap", key, params, hookData), abi.encode(delta));
-        // If afterSwap expects int128, decode as such; adjust as needed for your use case
-        //int128 updatedValue = abi.decode(result_, (int128));
+        // Call typed afterSwap runners; they return an int128 if applicable
+        int128 updatedValue = runHooks_AfterSwap(poolKeyHash, hookPath, sender, key, params, delta, hookData);
         console.log("After swap hook updated value: ");
-        return (this.afterSwap.selector, 0);
+        return (this.afterSwap.selector, updatedValue);
     }
-
+ 
     // 5. Donate Hooks
-
+ 
     function _beforeDonate(address sender, PoolKey calldata key, uint256 a, uint256 b, bytes calldata hookData) internal override returns (bytes4) {
         bytes32 hookPath = getPoolHookPath(key);
         bytes32 poolKeyHash = getPoolKeyHash(key);
-        runHooks(poolKeyHash, hookPath, abi.encode("beforeDonate", key, a, b, hookData));
+        runHooks_BeforeDonate(poolKeyHash, hookPath, sender, key, a, b, hookData);
         return this.beforeDonate.selector;
     }
-
+ 
     function _afterDonate(address sender, PoolKey calldata key, uint256 a, uint256 b, bytes calldata hookData) internal override returns (bytes4) {
         bytes32 hookPath = getPoolHookPath(key);
         bytes32 poolKeyHash = getPoolKeyHash(key);
-        runHooks(poolKeyHash, hookPath, abi.encode("afterDonate", key, a, b, hookData));
+        runHooks_AfterDonate(poolKeyHash, hookPath, sender, key, a, b, hookData);
         return this.afterDonate.selector;
     }
 
@@ -336,10 +351,11 @@ contract MasterControl is BaseHook, ERC1155 {
                 for (uint j = 0; j < first10.length; j++) {
                     console.log(uint8(first10[j]));
                 }
-                // For PointsCommand, context is the encoded AfterSwapInput struct
-                (success, ret) = cmds[i].target.delegatecall(abi.encodeWithSelector(cmds[i].selector, context));
+                // Delegate case: append the current 'value' after the context so targets receiving both context and value can decode them
+                (success, ret) = cmds[i].target.delegatecall(abi.encodeWithSelector(cmds[i].selector, context, value, cmds[i].data));
             } else {
-                (success, ret) = cmds[i].target.call(abi.encodePacked(cmds[i].selector, context, value, cmds[i].data));
+                // External call: pack selector + context + current value + extra data
+                (success, ret) = cmds[i].target.call(abi.encodeWithSelector(cmds[i].selector, context, value, cmds[i].data));
             }
             require(success, "Hook command failed");
             value = ret;
@@ -349,18 +365,249 @@ contract MasterControl is BaseHook, ERC1155 {
         return value;
     }
 
-    // Batch run of Command[] for setup (e.g., setting MemoryCard state via PointsCommand)
+    // --- Typed hook runners ---
+    // Each runner passes structured ABI parameters (typed) to commands and appends the command's configured bytes as a trailing `bytes` param.
+    // Commands are expected to implement a matching typed function signature with a trailing `bytes calldata extra` parameter.
+
+    function runHooks_BeforeInitialize(bytes32 poolKeyHash, bytes32 hookPath, address sender, PoolKey calldata key, uint160 sqrtPriceX96) internal {
+        Command[] storage cmds = poolCommands[poolKeyHash][hookPath];
+        for (uint i = 0; i < cmds.length; i++) {
+            bool success;
+            if (cmds[i].callType == CallType.Delegate) {
+                (success, ) = cmds[i].target.delegatecall(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, cmds[i].data)
+                );
+                require(success, "Delegatecall failed");
+            } else {
+                (success, ) = cmds[i].target.call(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, cmds[i].data)
+                );
+                require(success, "Call failed");
+            }
+        }
+    }
+
+    function runHooks_AfterInitialize(bytes32 poolKeyHash, bytes32 hookPath, address sender, PoolKey calldata key, uint160 sqrtPriceX96, int24 tick) internal {
+        Command[] storage cmds = poolCommands[poolKeyHash][hookPath];
+        for (uint i = 0; i < cmds.length; i++) {
+            bool success;
+            if (cmds[i].callType == CallType.Delegate) {
+                (success, ) = cmds[i].target.delegatecall(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, tick, cmds[i].data)
+                );
+                require(success, "Delegatecall failed");
+            } else {
+                (success, ) = cmds[i].target.call(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, tick, cmds[i].data)
+                );
+                require(success, "Call failed");
+            }
+        }
+    }
+
+    function runHooks_BeforeAddLiquidity(bytes32 poolKeyHash, bytes32 hookPath, address sender, PoolKey calldata key, ModifyLiquidityParams calldata params, bytes calldata hookData) internal {
+        Command[] storage cmds = poolCommands[poolKeyHash][hookPath];
+        for (uint i = 0; i < cmds.length; i++) {
+            bool success;
+            if (cmds[i].callType == CallType.Delegate) {
+                (success, ) = cmds[i].target.delegatecall(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                );
+                require(success, "Delegatecall failed");
+            } else {
+                (success, ) = cmds[i].target.call(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                );
+                require(success, "Call failed");
+            }
+        }
+    }
+
+    function runHooks_AfterAddLiquidity(bytes32 poolKeyHash, bytes32 hookPath, address sender, PoolKey calldata key, ModifyLiquidityParams calldata params, BalanceDelta delta, bytes calldata hookData) internal returns (BalanceDelta) {
+        Command[] storage cmds = poolCommands[poolKeyHash][hookPath];
+        BalanceDelta current = delta;
+        for (uint i = 0; i < cmds.length; i++) {
+            bool success;
+            bytes memory ret;
+            if (cmds[i].callType == CallType.Delegate) {
+                (success, ret) = cmds[i].target.delegatecall(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData, cmds[i].data)
+                );
+            } else {
+                (success, ret) = cmds[i].target.call(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData, cmds[i].data)
+                );
+            }
+            require(success, "Hook command failed");
+            // Expect each command to return an encoded BalanceDelta when applicable
+            current = abi.decode(ret, (BalanceDelta));
+        }
+        return current;
+    }
+
+    function runHooks_BeforeRemoveLiquidity(bytes32 poolKeyHash, bytes32 hookPath, address sender, PoolKey calldata key, ModifyLiquidityParams calldata params, bytes calldata hookData) internal {
+        Command[] storage cmds = poolCommands[poolKeyHash][hookPath];
+        for (uint i = 0; i < cmds.length; i++) {
+            bool success;
+            if (cmds[i].callType == CallType.Delegate) {
+                (success, ) = cmds[i].target.delegatecall(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                );
+                require(success, "Delegatecall failed");
+            } else {
+                (success, ) = cmds[i].target.call(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                );
+                require(success, "Call failed");
+            }
+        }
+    }
+
+    function runHooks_AfterRemoveLiquidity(bytes32 poolKeyHash, bytes32 hookPath, address sender, PoolKey calldata key, ModifyLiquidityParams calldata params, BalanceDelta delta, bytes calldata hookData) internal returns (BalanceDelta) {
+        Command[] storage cmds = poolCommands[poolKeyHash][hookPath];
+        BalanceDelta current = delta;
+        for (uint i = 0; i < cmds.length; i++) {
+            bool success;
+            bytes memory ret;
+            if (cmds[i].callType == CallType.Delegate) {
+                (success, ret) = cmds[i].target.delegatecall(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData, cmds[i].data)
+                );
+            } else {
+                (success, ret) = cmds[i].target.call(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData, cmds[i].data)
+                );
+            }
+            require(success, "Hook command failed");
+            current = abi.decode(ret, (BalanceDelta));
+        }
+        return current;
+    }
+
+    function runHooks_BeforeSwap(bytes32 poolKeyHash, bytes32 hookPath, address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData) internal returns (BeforeSwapDelta, uint24) {
+        Command[] storage cmds = poolCommands[poolKeyHash][hookPath];
+        BeforeSwapDelta resultDelta = BeforeSwapDeltaLibrary.ZERO_DELTA;
+        uint24 resultUint = 0;
+        for (uint i = 0; i < cmds.length; i++) {
+            bool success;
+            bytes memory ret;
+            if (cmds[i].callType == CallType.Delegate) {
+                (success, ret) = cmds[i].target.delegatecall(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                );
+            } else {
+                (success, ret) = cmds[i].target.call(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                );
+            }
+            require(success, "Hook command failed");
+            // If the command returns a BeforeSwapDelta + uint24, decode and use it; otherwise ignore
+            if (ret.length >= 32) {
+                // decode as (BeforeSwapDelta, uint24) packed in ABI => decode to (int256, uint24)
+                (int256 bsd, uint24 u) = abi.decode(ret, (int256, uint24));
+                resultDelta = BeforeSwapDelta.wrap(bsd);
+                resultUint = u;
+            }
+        }
+        return (resultDelta, resultUint);
+    }
+
+    function runHooks_AfterSwap(bytes32 poolKeyHash, bytes32 hookPath, address sender, PoolKey calldata key, SwapParams calldata params, BalanceDelta delta, bytes calldata hookData) internal returns (int128) {
+        Command[] storage cmds = poolCommands[poolKeyHash][hookPath];
+        int128 resultInt = int128(0);
+        for (uint i = 0; i < cmds.length; i++) {
+            bool success;
+            bytes memory ret;
+            if (cmds[i].callType == CallType.Delegate) {
+                (success, ret) = cmds[i].target.delegatecall(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, delta, hookData, cmds[i].data)
+                );
+            } else {
+                (success, ret) = cmds[i].target.call(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, delta, hookData, cmds[i].data)
+                );
+            }
+            require(success, "Hook command failed");
+            if (ret.length >= 32) {
+                resultInt = abi.decode(ret, (int128));
+            }
+        }
+        return resultInt;
+    }
+
+    function runHooks_BeforeDonate(bytes32 poolKeyHash, bytes32 hookPath, address sender, PoolKey calldata key, uint256 a, uint256 b, bytes calldata hookData) internal {
+        Command[] storage cmds = poolCommands[poolKeyHash][hookPath];
+        for (uint i = 0; i < cmds.length; i++) {
+            bool success;
+            if (cmds[i].callType == CallType.Delegate) {
+                (success, ) = cmds[i].target.delegatecall(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData, cmds[i].data)
+                );
+                require(success, "Delegatecall failed");
+            } else {
+                (success, ) = cmds[i].target.call(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData, cmds[i].data)
+                );
+                require(success, "Call failed");
+            }
+        }
+    }
+
+    function runHooks_AfterDonate(bytes32 poolKeyHash, bytes32 hookPath, address sender, PoolKey calldata key, uint256 a, uint256 b, bytes calldata hookData) internal {
+        Command[] storage cmds = poolCommands[poolKeyHash][hookPath];
+        for (uint i = 0; i < cmds.length; i++) {
+            bool success;
+            if (cmds[i].callType == CallType.Delegate) {
+                (success, ) = cmds[i].target.delegatecall(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData, cmds[i].data)
+                );
+                require(success, "Delegatecall failed");
+            } else {
+                (success, ) = cmds[i].target.call(
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData, cmds[i].data)
+                );
+                require(success, "Call failed");
+            }
+        }
+    }
+
+    // Batch run of Command[] for setup (global admin utility)
+    // Now this function invokes commands using the typed-caller convention:
+    // abi.encodeWithSelector(selector, <typed params...>, bytes extra)
     function runCommandBatch(Command[] calldata commands) external {
         for (uint i = 0; i < commands.length; i++) {
             bool success;
+            // Each Command.data is treated as the trailing `bytes extra` parameter for typed functions
             if (commands[i].callType == CallType.Delegate) {
                 (success, ) = commands[i].target.delegatecall(
-                    abi.encodePacked(commands[i].selector, commands[i].data)
+                    abi.encodeWithSelector(commands[i].selector, commands[i].data)
                 );
                 require(success, "Delegatecall failed");
             } else if (commands[i].callType == CallType.Call) {
                 (success, ) = commands[i].target.call(
-                    abi.encodePacked(commands[i].selector, commands[i].data)
+                    abi.encodeWithSelector(commands[i].selector, commands[i].data)
+                );
+                require(success, "Call failed");
+            }
+        }
+    }
+
+    // Pool-scoped batch runner (requires pool admin) - accepts PoolKey to prevent poolKeyHash spoofing
+    function runCommandBatchForPool(PoolKey calldata key, Command[] calldata commands) external {
+        require(address(accessControl) != address(0), "AccessControl not configured");
+        bytes32 poolKeyHash = getPoolKeyHash(key);
+        require(accessControl.getPoolAdmin(poolKeyHash) == msg.sender, "MasterControl: not pool admin");
+
+        for (uint i = 0; i < commands.length; i++) {
+            bool success;
+            if (commands[i].callType == CallType.Delegate) {
+                (success, ) = commands[i].target.delegatecall(
+                    abi.encodeWithSelector(commands[i].selector, commands[i].data)
+                );
+                require(success, "Delegatecall failed");
+            } else if (commands[i].callType == CallType.Call) {
+                (success, ) = commands[i].target.call(
+                    abi.encodeWithSelector(commands[i].selector, commands[i].data)
                 );
                 require(success, "Call failed");
             }
@@ -373,12 +620,12 @@ contract MasterControl is BaseHook, ERC1155 {
             bool success;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ) = cmds[i].target.delegatecall(
-                    abi.encodePacked(cmds[i].selector, context, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, context, cmds[i].data)
                 );
                 require(success, "Delegatecall failed");
             } else if (cmds[i].callType == CallType.Call) {
                 (success, ) = cmds[i].target.call(
-                    abi.encodePacked(cmds[i].selector, context, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, context, cmds[i].data)
                 );
                 require(success, "Call failed");
             }
@@ -390,13 +637,18 @@ contract MasterControl is BaseHook, ERC1155 {
     // --- User Command Management ---
 
     
-        // Set commands for a poolKeyHash and hookPath
-        function setCommands(bytes32 poolKeyHash, bytes32 hookPath, Command[] calldata commands) external {
+        // Set commands for a pool (scoped) and hookPath — require pool admin and compute poolKeyHash from typed PoolKey
+        function setCommands(PoolKey calldata key, bytes32 hookPath, Command[] calldata commands) external {
+            bytes32 poolKeyHash = getPoolKeyHash(key);
+            require(address(accessControl) != address(0), "AccessControl not configured");
+            require(accessControl.getPoolAdmin(poolKeyHash) == msg.sender, "MasterControl: not pool admin");
+
             delete poolCommands[poolKeyHash][hookPath];
             for (uint i = 0; i < commands.length; i++) {
                 poolCommands[poolKeyHash][hookPath].push(commands[i]);
             }
-            emit CommandsSet(poolKeyHash, hookPath, commands);
+            bytes32 commandsHash = keccak256(abi.encode(commands));
+            emit CommandsSet(poolKeyHash, hookPath, commandsHash);
         }
 
     function getCommands(bytes32 poolKeyHash, bytes32 hookPath) external view returns (Command[] memory) {

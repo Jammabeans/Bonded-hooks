@@ -6,6 +6,7 @@ import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {PoolId} from "v4-core/types/PoolId.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
+import {AccessControl} from "./AccessControl.sol";
 
 import "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
 
@@ -24,12 +25,14 @@ import "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
 /// @dev This contract focuses on token creation and pool initialization only (LP seeding removed).
 contract PoolLaunchPad {
     IPoolManager public immutable manager;
-
+    AccessControl public accessControl;
+    
     event TokenCreated(address indexed creator, address token);
     event PoolInitialized(address indexed creator, PoolId poolId);
 
-    constructor(IPoolManager _manager) {
+    constructor(IPoolManager _manager, AccessControl _accessControl) {
         manager = _manager;
+        accessControl = _accessControl;
     }
 
     /// @notice Create a full ERC20 (OpenZeppelin) and mint the initial supply to this contract (used to seed pools).
@@ -170,6 +173,9 @@ contract PoolLaunchPad {
     function _initializePool(PoolKey memory key, uint160 sqrtPriceX96) internal {
         PoolId id = key.toId();
         manager.initialize(key, sqrtPriceX96);
+        // Register pool admin to the caller who initialized the pool
+        bytes32 poolKeyHash = keccak256(abi.encode(key));
+        accessControl.setPoolAdmin(poolKeyHash, msg.sender);
         emit PoolInitialized(msg.sender, id);
     }
 

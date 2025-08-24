@@ -19,6 +19,7 @@ import {ERC1155TokenReceiver} from "solmate/src/tokens/ERC1155.sol";
 
 import "forge-std/console.sol";
 import {MasterControl} from "../src/MasterControl.sol";
+import {AccessControl} from "../src/AccessControl.sol";
 
 import {PointsCommand} from "../src/PointsCommand.sol";
 
@@ -30,6 +31,7 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
     MasterControl masterControl;
     PointsCommand pointsCommand;
     MemoryCard memoryCard;
+    AccessControl accessControl;
 
     function setUp() public {
         // Deploy PoolManager and Router contracts
@@ -53,9 +55,14 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         // Use full artifact path to avoid ambiguity and ensure correct bytecode
         deployCodeTo("MasterControl.sol:MasterControl", abi.encode(manager), address(flags));
         masterControl = MasterControl(address(flags));
-
+ 
+        // Deploy and register AccessControl, then set in MasterControl (must be called by pool manager)
+        accessControl = new AccessControl();
+        vm.prank(address(manager));
+        masterControl.setAccessControl(address(accessControl));
+ 
         console.log("point 1");
-
+ 
         // Deploy pointsCommand
         pointsCommand = new PointsCommand();
 
@@ -63,28 +70,26 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         // These values can be adjusted as needed for your test logic
         address memoryCardAddr = address(memoryCard);
 
-        // Prepare batch commands for PointsCommand setters
+        // Prepare batch commands for PointsCommand setters (data will be finalized after pool creation)
         MasterControl.Command[] memory setupCommands = new MasterControl.Command[](3);
         setupCommands[0] = MasterControl.Command({
             target: address(pointsCommand),
             selector: pointsCommand.setBonusThreshold.selector,
-            data: abi.encode(memoryCardAddr, 0.0002 ether), // threshold for bonus
+            data: abi.encode(memoryCardAddr, bytes32(0), 0.0002 ether), // placeholder for poolKeyHash
             callType: MasterControl.CallType.Delegate
         });
         setupCommands[1] = MasterControl.Command({
             target: address(pointsCommand),
             selector: pointsCommand.setBonusPercent.selector,
-            data: abi.encode(memoryCardAddr, 20), // bonus percent
+            data: abi.encode(memoryCardAddr, bytes32(0), 20), // placeholder
             callType: MasterControl.CallType.Delegate
         });
         setupCommands[2] = MasterControl.Command({
             target: address(pointsCommand),
             selector: pointsCommand.setBasePointsPercent.selector,
-            data: abi.encode(memoryCardAddr, 20), // 20% base points
+            data: abi.encode(memoryCardAddr, bytes32(0), 20), // placeholder
             callType: MasterControl.CallType.Delegate
         });
-
-        masterControl.runCommandBatch(setupCommands);
 
         console.log("mintHook address: ", address(pointsCommand));
 
@@ -151,9 +156,27 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
                 key.hooks
             )
         );
-
-        masterControl.setCommands(poolKeyHash, hookPath, commands);
-
+ 
+        // Simulate a separate user creating the pool and becoming the pool admin,
+        // then run the setup commands as that admin so per-pool config is written.
+        address poolCreator = address(2);
+        vm.deal(poolCreator, 10 ether);
+        // Register pool admin (AccessControl allows first setter by anyone)
+        vm.prank(poolCreator);
+        accessControl.setPoolAdmin(poolKeyHash, poolCreator);
+ 
+        // Have the poolCreator register the commands for this pool
+        vm.prank(poolCreator);
+        masterControl.setCommands(key, hookPath, commands);
+ 
+        // Finalize setupCommands with actual poolKeyHash and run them as pool admin
+        setupCommands[0].data = abi.encode(memoryCardAddr, poolKeyHash, 0.0002 ether);
+        setupCommands[1].data = abi.encode(memoryCardAddr, poolKeyHash, 20);
+        setupCommands[2].data = abi.encode(memoryCardAddr, poolKeyHash, 20);
+ 
+        vm.prank(poolCreator);
+        masterControl.runCommandBatchForPool(key, setupCommands);
+ 
     }
 
     function test_swap_mints_points() public {
