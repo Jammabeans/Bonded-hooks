@@ -26,11 +26,6 @@ interface IHook {
 }
 
 contract MasterControl is BaseHook, ERC1155 {
-    struct HookInstance {
-        address hookAddress;
-        bool enabled;
-        string name;
-    }
 
     enum CallType { Delegate, Call }
 
@@ -43,22 +38,63 @@ contract MasterControl is BaseHook, ERC1155 {
 
     // poolKeyHash => hookPath (bytes32) => array of commands
     mapping(bytes32 => mapping(bytes32 => Command[])) public poolCommands;
-
-    mapping(bytes32 => HookInstance[]) private hooksByPath;
-    bytes32[] public hookPaths;
-
+    
     // Access control registry (maps poolKeyHash => admin)
     AccessControl public accessControl;
 
-    event HookAdded(bytes32 indexed hookPath, address indexed hook, string name);
-    event HookToggled(bytes32 indexed hookPath, address indexed hook, bool enabled);
-    event CommandsSet(bytes32 indexed poolKeyHash, bytes32 indexed hookPath, bytes32 commandsHash);
+    // MasterControl admin (contract-level)
+    address public owner;
 
-    constructor(IPoolManager _manager) BaseHook(_manager) {}
+    // Approved commands registry per hookPath: hookPath => target => selector => enabled
+    mapping(bytes32 => mapping(address => mapping(bytes4 => bool))) public commandEnabled;
+
+    event CommandsSet(bytes32 indexed poolKeyHash, bytes32 indexed hookPath, bytes32 commandsHash);
     
-    /// @notice Set the AccessControl contract address (only callable by the pool manager)
-    function setAccessControl(address _accessControl) external onlyPoolManager {
+    event CommandApproved(bytes32 indexed hookPath, address indexed target, bytes4 selector, string name);
+    event CommandToggled(bytes32 indexed hookPath, address indexed target, bytes4 selector, bool enabled);
+
+    /// @notice Approve a command (target + selector) for a hookPath. Owner-only.
+    function approveCommand(bytes32 hookPath, address target, bytes4 selector, string memory name) external {
+        require(msg.sender == owner, "MasterControl: only owner");
+        commandEnabled[hookPath][target][selector] = true;
+        emit CommandApproved(hookPath, target, selector, name);
+    }
+
+    /// @notice Toggle approval for a command for a hookPath. Owner-only.
+    function setCommandEnabled(bytes32 hookPath, address target, bytes4 selector, bool enabled) external {
+        require(msg.sender == owner, "MasterControl: only owner");
+        commandEnabled[hookPath][target][selector] = enabled;
+        emit CommandToggled(hookPath, target, selector, enabled);
+    }
+
+    constructor(IPoolManager _manager) BaseHook(_manager) {
+        owner = msg.sender;
+    }
+    
+    
+    /// @notice Owner-only: set the AccessControl contract used by MasterControl
+    function setAccessControl(address _accessControl) external {
+        require(msg.sender == owner, "MasterControl: only owner");
+        require(_accessControl != address(0), "MasterControl: zero address");
         accessControl = AccessControl(_accessControl);
+    }
+    
+    // Address of the authorized PoolLaunchPad contract that may register pool admins
+    address public poolLaunchPad;
+
+    /// @notice Owner-only: set the PoolLaunchPad address the MasterControl will accept registrations from
+    function setPoolLaunchPad(address _pad) external {
+        require(msg.sender == owner, "MasterControl: only owner");
+        poolLaunchPad = _pad;
+    }
+
+    /// @notice Called by the PoolLaunchPad when it initializes a pool to register the pool admin.
+    /// Only callable by the configured PoolLaunchPad contract.
+    function registerPoolAdmin(PoolKey calldata key, address admin) external {
+        require(poolLaunchPad != address(0), "MasterControl: poolLaunchPad not set");
+        require(msg.sender == poolLaunchPad, "MasterControl: only PoolLaunchPad");
+        bytes32 poolKeyHash = getPoolKeyHash(key);
+        accessControl.setPoolAdmin(poolKeyHash, admin);
     }
 
     // --- ERC1155 URI ---
@@ -73,46 +109,9 @@ contract MasterControl is BaseHook, ERC1155 {
         _mint(to, id, amount, "");
     }
 
-    function addHook(PoolKey calldata key, string memory hookPath, address hook, string memory name) external {
-        // Compute poolKeyHash from typed PoolKey to prevent arbitrary poolKeyHash spoofing
-        bytes32 poolKeyHash = getPoolKeyHash(key);
-        // Only pool admin for poolKeyHash may register hooks (scoped by pool)
-        require(address(accessControl) != address(0), "AccessControl not configured");
-        require(accessControl.getPoolAdmin(poolKeyHash) == msg.sender, "MasterControl: not pool admin");
- 
-        bytes32 path = keccak256(bytes(hookPath));
-        if (hooksByPath[path].length == 0) {
-            hookPaths.push(path);
-        }
-    
-        hooksByPath[path].push(HookInstance({hookAddress: hook, enabled: true, name: name}));
-        emit HookAdded(path, hook, name);
-    }
 
-    function setHookEnabled(PoolKey calldata key, string memory hookPath, address hook, bool enabled) external {
-        bytes32 poolKeyHash = getPoolKeyHash(key);
-        require(address(accessControl) != address(0), "AccessControl not configured");
-        require(accessControl.getPoolAdmin(poolKeyHash) == msg.sender, "MasterControl: not pool admin");
- 
-        bytes32 path = keccak256(bytes(hookPath));
-        HookInstance[] storage arr = hooksByPath[path];
-        for (uint i = 0; i < arr.length; i++) {
-            if (arr[i].hookAddress == hook) {
-                arr[i].enabled = enabled;
-                emit HookToggled(path, hook, enabled);
-                return;
-            }
-        }
-        revert("Hook not found");
-    }
 
-    function getHooks(string memory hookPath) external view returns (HookInstance[] memory) {
-        return hooksByPath[keccak256(bytes(hookPath))];
-    }
 
-    function getAllHookPaths() external view returns (bytes32[] memory) {
-        return hookPaths;
-    }
 
     function getHookPermissions()
         public
@@ -642,6 +641,11 @@ contract MasterControl is BaseHook, ERC1155 {
             bytes32 poolKeyHash = getPoolKeyHash(key);
             require(address(accessControl) != address(0), "AccessControl not configured");
             require(accessControl.getPoolAdmin(poolKeyHash) == msg.sender, "MasterControl: not pool admin");
+
+            // Ensure each command in the list is approved by owner for this hookPath
+            for (uint i = 0; i < commands.length; i++) {
+                require(commandEnabled[hookPath][commands[i].target][commands[i].selector], "MasterControl: command not approved");
+            }
 
             delete poolCommands[poolKeyHash][hookPath];
             for (uint i = 0; i < commands.length; i++) {

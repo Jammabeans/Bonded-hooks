@@ -173,7 +173,7 @@ contract PoolLaunchPad {
     function _initializePool(PoolKey memory key, uint160 sqrtPriceX96) internal {
         PoolId id = key.toId();
         manager.initialize(key, sqrtPriceX96);
-        // Register pool admin to the caller who initialized the pool
+        // Register the caller (creator) as the pool admin in AccessControl
         bytes32 poolKeyHash = keccak256(abi.encode(key));
         accessControl.setPoolAdmin(poolKeyHash, msg.sender);
         emit PoolInitialized(msg.sender, id);

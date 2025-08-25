@@ -3,20 +3,40 @@ pragma solidity ^0.8.20;
 
 /// @notice Simple per-pool access control registry.
 /// @dev Maps a bytes32 poolKeyHash (keccak256(abi.encode(poolKey))) to an admin address.
-/// - setPoolAdmin: If a pool has no admin yet, anyone may set the admin (used by PoolLaunchPad during initialization).
-///                 Once set, only the current admin can change it.
+/// - setPoolAdmin: Only the configured PoolLaunchPad may set the initial admin for a pool.
+///                 After initialization, only the current admin or the PoolLaunchPad may change it.
 /// - poolAdmin / getPoolAdmin / isPoolAdmin: view helpers.
 contract AccessControl {
     mapping(bytes32 => address) public poolAdmin;
 
+    /// @notice Contract-level owner (deployer) who may configure the PoolLaunchPad address.
+    address public owner;
+
+    /// @notice Authorized PoolLaunchPad contract allowed to register initial admins.
+    address public poolLaunchPad;
+
     event PoolAdminSet(bytes32 indexed poolKeyHash, address indexed admin);
+    event PoolLaunchPadSet(address indexed poolLaunchPad);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    /// @notice Configure the PoolLaunchPad address. Only the deployer/owner may call this.
+    function setPoolLaunchPad(address _pad) external {
+        require(msg.sender == owner, "AccessControl: only owner");
+        poolLaunchPad = _pad;
+        emit PoolLaunchPadSet(_pad);
+    }
 
     /// @notice Set the admin for a given poolKeyHash.
-    /// @dev If no admin exists for the pool, anyone may set it (this allows the pool launcher to register the caller).
-    ///      If an admin exists, only the current admin may update it.
+    /// @dev Initial admin may only be set by the configured PoolLaunchPad.
+    ///      Subsequent changes may be performed by the current admin or the PoolLaunchPad.
     function setPoolAdmin(bytes32 poolKeyHash, address admin) external {
         address current = poolAdmin[poolKeyHash];
         if (current == address(0)) {
+            require(poolLaunchPad != address(0), "AccessControl: poolLaunchPad not set");
+            require(msg.sender == poolLaunchPad, "AccessControl: only PoolLaunchPad may set initial admin");
             poolAdmin[poolKeyHash] = admin;
             emit PoolAdminSet(poolKeyHash, admin);
         } else {
