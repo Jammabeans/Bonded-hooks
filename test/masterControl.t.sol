@@ -37,6 +37,8 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
     MemoryCard memoryCard;
     AccessControl accessControl;
     PoolLaunchPad launchpad;
+    uint256 poolIdUint;
+    address poolCreator;
 
     function setUp() public {
         // Deploy PoolManager and Router contracts
@@ -55,7 +57,9 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
 
         // Deploy and register AccessControl, then set in MasterControl (must be called by pool manager)
         accessControl = new AccessControl();
-        vm.prank(address(manager));
+        // Call setAccessControl as the MasterControl owner
+        address mcOwner = masterControl.owner();
+        vm.prank(mcOwner);
         masterControl.setAccessControl(address(accessControl));
 
         // Deploy PoolLaunchPad and configure AccessControl to allow it to set initial admins
@@ -137,7 +141,7 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
             callType: MasterControl.CallType.Delegate
         });
 
-        bytes32 poolKeyHash = keccak256(abi.encode(key));
+        poolIdUint = uint256(PoolId.unwrap(key.toId()));
         bytes32 hookPath = keccak256(
             abi.encodePacked(
                 "afterSwap",
@@ -162,7 +166,7 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
 
         // Simulate a separate user creating the pool and becoming the pool admin,
         // then run the setup commands as that admin so per-pool config is written.
-        address poolCreator = address(2);
+        poolCreator = address(2);
         vm.deal(poolCreator, 10 ether);
         // Note: PoolLaunchPad already registered the pool admin during initialization.
         // But to simulate the admin executing per-pool setup, we assume poolCreator is that admin.
@@ -172,39 +176,39 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         // AccessControl.setPoolAdmin was already called by the launchpad at initialization with msg.sender == launchpad.
         // For tests, ensure the pool admin is poolCreator by forcing it now via direct call as owner of AccessControl if needed.
         // We'll set the admin directly as the test contract (owner of AccessControl) to poolCreator to proceed:
-        accessControl.setPoolAdmin(poolKeyHash, poolCreator);
+        accessControl.setPoolAdmin(poolIdUint, poolCreator);
 
         // Have the poolCreator register the commands for this pool
         vm.prank(poolCreator);
-        masterControl.setCommands(key, hookPath, commands);
+        masterControl.setCommands(poolIdUint, hookPath, commands);
 
         // Finalize and run per-pool config (moved into helper to avoid "stack too deep")
-        configurePoolSettings(key, poolKeyHash, memoryCardAddr, poolCreator);
+        configurePoolSettings(key, poolIdUint);
     }
     // Helper moved out of setUp to avoid "stack too deep"
-    function configurePoolSettings(PoolKey memory key, bytes32 poolKeyHash, address memoryCardAddr, address poolCreator) internal {
+    function configurePoolSettings(PoolKey memory key, uint256 poolIdUint) internal {
         MasterControl.Command[] memory setupCommands = new MasterControl.Command[](3);
         setupCommands[0] = MasterControl.Command({
             target: address(pointsCommand),
             selector: pointsCommand.setBonusThreshold.selector,
-            data: abi.encode(memoryCardAddr, poolKeyHash, 0.0002 ether),
+            data: abi.encode(address(memoryCard), poolIdUint, 0.0002 ether),
             callType: MasterControl.CallType.Delegate
         });
         setupCommands[1] = MasterControl.Command({
             target: address(pointsCommand),
             selector: pointsCommand.setBonusPercent.selector,
-            data: abi.encode(memoryCardAddr, poolKeyHash, 20),
+            data: abi.encode(address(memoryCard), poolIdUint, 20),
             callType: MasterControl.CallType.Delegate
         });
         setupCommands[2] = MasterControl.Command({
             target: address(pointsCommand),
             selector: pointsCommand.setBasePointsPercent.selector,
-            data: abi.encode(memoryCardAddr, poolKeyHash, 20),
+            data: abi.encode(address(memoryCard), poolIdUint, 20),
             callType: MasterControl.CallType.Delegate
         });
 
         vm.prank(poolCreator);
-        masterControl.runCommandBatchForPool(key, setupCommands);
+        masterControl.runCommandBatchForPool(poolIdUint, setupCommands);
     }
 
     function test_swap_mints_points() public {
@@ -281,11 +285,9 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         });
 
         // Ensure poolCreator is pool admin (setUp registered poolCreator earlier)
-        address poolCreator = address(2);
-
         // Expect revert when pool admin attempts to set unapproved commands
         vm.prank(poolCreator);
         vm.expectRevert(bytes("MasterControl: command not approved"));
-        masterControl.setCommands(key, hookPath, badCommands);
+        masterControl.setCommands(poolIdUint, hookPath, badCommands);
     }
 }

@@ -174,8 +174,8 @@ contract PoolLaunchPad {
         PoolId id = key.toId();
         manager.initialize(key, sqrtPriceX96);
         // Register the caller (creator) as the pool admin in AccessControl
-        bytes32 poolKeyHash = keccak256(abi.encode(key));
-        accessControl.setPoolAdmin(poolKeyHash, msg.sender);
+        // Use canonical PoolId instead of a keccak hash
+        accessControl.setPoolAdmin(uint256(PoolId.unwrap(id)), msg.sender);
         emit PoolInitialized(msg.sender, id);
     }
 

@@ -32,7 +32,7 @@ contract PointsCommand {
     struct AfterSwapInput {
         address memoryCardAddr;
         address pointsTokenAddr;
-        uint256 poolId; // or PoolId type
+        uint256 poolId; // canonical numeric PoolId
         address user; // trade recipient
         int256 amount0;
         int256 amount1;
@@ -60,11 +60,11 @@ contract PointsCommand {
         // Use memoryCard address from the decoded input (delegatecall context => address(this) == MasterControl)
         IMemoryCard mc = IMemoryCard(input.memoryCardAddr);
  
-        // Derive poolKeyHash from the PoolKey param so settings are per-pool
-        bytes32 poolKeyHash = keccak256(abi.encode(key));
-        bytes32 thresholdKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolKeyHash));
-        bytes32 bonusKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolKeyHash));
-        bytes32 basePointsKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolKeyHash));
+        // Use the provided canonical poolId (numeric) so settings are per-pool
+        uint256 poolId = input.poolId;
+        bytes32 thresholdKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolId));
+        bytes32 bonusKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolId));
+        bytes32 basePointsKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolId));
  
         // Read per-pool config from MemoryCard under this contract's caller slot (delegatecall context => address(this) == MasterControl)
         uint256 threshold = toUint256(mc.read(address(this), thresholdKey));
@@ -113,23 +113,23 @@ contract PointsCommand {
     // --- Stateless admin "setters"/"getters" (callable via dispatcher with encoded input) ---
 
     function setBonusThreshold(bytes calldata data) external {
-        // Expect encoded (address memoryCardAddr, bytes32 poolKeyHash, uint256 newThreshold)
-        (address memoryCardAddr, bytes32 poolKeyHash, uint256 newThreshold) = abi.decode(data, (address, bytes32, uint256));
-        bytes32 storageKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolKeyHash));
+        // Expect encoded (address memoryCardAddr, uint256 poolId, uint256 newThreshold)
+        (address memoryCardAddr, uint256 poolId, uint256 newThreshold) = abi.decode(data, (address, uint256, uint256));
+        bytes32 storageKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolId));
         IMemoryCard(memoryCardAddr).write(storageKey, abi.encode(newThreshold));
     }
 
     function setBonusPercent(bytes calldata data) external {
-        // Expect encoded (address memoryCardAddr, bytes32 poolKeyHash, uint256 newPercent)
-        (address memoryCardAddr, bytes32 poolKeyHash, uint256 newPercent) = abi.decode(data, (address, bytes32, uint256));
-        bytes32 storageKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolKeyHash));
+        // Expect encoded (address memoryCardAddr, uint256 poolId, uint256 newPercent)
+        (address memoryCardAddr, uint256 poolId, uint256 newPercent) = abi.decode(data, (address, uint256, uint256));
+        bytes32 storageKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolId));
         IMemoryCard(memoryCardAddr).write(storageKey, abi.encode(newPercent));
     }
 
     function setBasePointsPercent(bytes calldata data) external {
-        // Expect encoded (address memoryCardAddr, bytes32 poolKeyHash, uint256 newPercent)
-        (address memoryCardAddr, bytes32 poolKeyHash, uint256 newPercent) = abi.decode(data, (address, bytes32, uint256));
-        bytes32 storageKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolKeyHash));
+        // Expect encoded (address memoryCardAddr, uint256 poolId, uint256 newPercent)
+        (address memoryCardAddr, uint256 poolId, uint256 newPercent) = abi.decode(data, (address, uint256, uint256));
+        bytes32 storageKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolId));
         IMemoryCard(memoryCardAddr).write(storageKey, abi.encode(newPercent));
     }
 
