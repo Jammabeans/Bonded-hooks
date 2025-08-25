@@ -212,7 +212,7 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
     }
 
     function test_swap_mints_points() public {
-        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+        poolIdUint = uint256(PoolId.unwrap(key.toId()));
         uint256 pointsBalanceOriginal = masterControl.balanceOf(
             address(this),
             poolIdUint
