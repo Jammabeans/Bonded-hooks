@@ -9,6 +9,7 @@ import {PoolId} from "v4-core/types/PoolId.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {ERC20} from "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
+import {Currency} from "v4-core/types/Currency.sol";
 
 contract PoolLaunchPadTest is Test, Deployers {
     PoolLaunchPad launchpad;
@@ -31,7 +32,18 @@ contract PoolLaunchPadTest is Test, Deployers {
             1 << 96,
             IHooks(address(0))
         );
-        assert(PoolId.unwrap(pid) != 0);
+
+        // Reconstruct the canonical PoolKey used by the launchpad and assert pool id matches
+        address currency0Addr = tokenAddr;
+        address currency1Addr = address(0);
+        (address c0, address c1) = currency0Addr == currency1Addr ? (currency0Addr, currency1Addr) : (currency0Addr < currency1Addr ? (currency0Addr, currency1Addr) : (currency1Addr, currency0Addr));
+        PoolKey memory expectedKey = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, IHooks(address(0)));
+
+        assert(PoolId.unwrap(pid) == PoolId.unwrap(expectedKey.toId()));
+
+        // Ensure AccessControl registered the calling account (this test) as pool admin
+        uint256 pidUint = uint256(PoolId.unwrap(pid));
+        assert(accessControl.getPoolAdmin(pidUint) == address(this));
     }
 
     function test_suppliedTokenPairedWithNative_initializesPool() public {
@@ -43,21 +55,40 @@ contract PoolLaunchPadTest is Test, Deployers {
             1 << 96,
             IHooks(address(0))
         );
-        assert(PoolId.unwrap(pid) != 0);
+
+        address currency0Addr = address(0);
+        address currency1Addr = tokenAddr;
+        (address c0, address c1) = currency0Addr == currency1Addr ? (currency0Addr, currency1Addr) : (currency0Addr < currency1Addr ? (currency0Addr, currency1Addr) : (currency1Addr, currency0Addr));
+        PoolKey memory expectedKey = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, IHooks(address(0)));
+
+        assert(PoolId.unwrap(pid) == PoolId.unwrap(expectedKey.toId()));
+
+        uint256 pidUint2 = uint256(PoolId.unwrap(pid));
+        assert(accessControl.getPoolAdmin(pidUint2) == address(this));
     }
 
     function test_newTokenPairedWithSuppliedToken_initializesPool() public {
+        address otherToken = address(new ERC20Deployer("Other","O", address(this), 1000 ether));
         (PoolId pid, address tokenAddr) = launchpad.createNewTokenAndInitWithToken(
             "TKN",
             "TKN",
             1000 ether,
-            address(new ERC20Deployer("Other","O", address(this), 1000 ether)),
+            otherToken,
             3000,
             60,
             1 << 96,
             IHooks(address(0))
         );
-        assert(PoolId.unwrap(pid) != 0);
+
+        address currency0Addr = tokenAddr;
+        address currency1Addr = otherToken;
+        (address c0, address c1) = currency0Addr == currency1Addr ? (currency0Addr, currency1Addr) : (currency0Addr < currency1Addr ? (currency0Addr, currency1Addr) : (currency1Addr, currency0Addr));
+        PoolKey memory expectedKey = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, IHooks(address(0)));
+
+        assert(PoolId.unwrap(pid) == PoolId.unwrap(expectedKey.toId()));
+
+        uint256 pidUint2 = uint256(PoolId.unwrap(pid));
+        assert(accessControl.getPoolAdmin(pidUint2) == address(this));
     }
 
     function test_initWithSuppliedTokens_initializesPool() public {
@@ -71,6 +102,15 @@ contract PoolLaunchPadTest is Test, Deployers {
             1 << 96,
             IHooks(address(0))
         );
-        assert(PoolId.unwrap(pid) != 0);
+
+        address currency0Addr = address(a);
+        address currency1Addr = address(b);
+        (address c0, address c1) = currency0Addr == currency1Addr ? (currency0Addr, currency1Addr) : (currency0Addr < currency1Addr ? (currency0Addr, currency1Addr) : (currency1Addr, currency0Addr));
+        PoolKey memory expectedKey = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, IHooks(address(0)));
+
+        assert(PoolId.unwrap(pid) == PoolId.unwrap(expectedKey.toId()));
+
+        uint256 pidUint2 = uint256(PoolId.unwrap(pid));
+        assert(accessControl.getPoolAdmin(pidUint2) == address(this));
     }
 }
