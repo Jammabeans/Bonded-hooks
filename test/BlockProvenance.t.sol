@@ -163,4 +163,189 @@ contract BlockProvenanceTest is Test, Deployers {
         vm.expectRevert(bytes("MasterControl: contains locked command"));
         master.clearCommands(pidUint, hookA);
     }
+
+    function test_owner_revoke_does_not_remove_applied_commands() public {
+        // create pool via launchpad
+        (PoolId pid, address tokenAddr) = launchpad.createNewTokenAndInitWithNative("Z","Z",100 ether,3000,60,1<<96, IHooks(address(master)));
+        uint256 pidUint = uint256(PoolId.unwrap(pid));
+
+        // set this contract as pool admin (force)
+        vm.prank(address(launchpad));
+        access.setPoolAdmin(pidUint, address(this));
+
+        // deploy mock target
+        MockTarget t = new MockTarget();
+        bytes32 hookPath = keccak256("hookRevoke");
+        bytes4 sel = MockTarget.doNothing.selector;
+
+        // owner approves command
+        vm.prank(owner);
+        master.approveCommand(hookPath, address(t), sel, "noop");
+
+        // create a block and mark immutable
+        MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
+        cmds[0] = MasterControl.Command({hookPath: hookPath, target: address(t), selector: sel, data: abi.encodePacked(bytes1(0x01)), callType: MasterControl.CallType.Delegate});
+
+        uint256 blockId = 300;
+        vm.prank(owner);
+        master.createBlock(blockId, cmds, 0);
+
+        vm.prank(owner);
+        master.setBlockMetadata(blockId, true, bytes32(0));
+
+        // apply to pool
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = blockId;
+        vm.prank(address(this));
+        master.applyBlocksToPool(pidUint, ids);
+
+        // owner revokes the block (prevents future applies) — should not remove already-applied commands
+        vm.prank(owner);
+        master.revokeBlock(blockId);
+
+        // verify that the command still exists on the pool and remains locked
+        MasterControl.Command[] memory readBack = master.getCommands(pidUint, hookPath);
+        assertEq(readBack.length, 1);
+        bool locked = master.commandLockedForPool(pidUint, hookPath, address(t), sel);
+        assert(locked);
+
+        // Attempt to apply the same block to a different pool should fail because block is revoked
+        (PoolId pid2, address tokenAddr2) = launchpad.createNewTokenAndInitWithNative("Z2","Z2",100 ether,3000,60,1<<96, IHooks(address(master)));
+        uint256 pid2Uint = uint256(PoolId.unwrap(pid2));
+        vm.prank(address(launchpad));
+        access.setPoolAdmin(pid2Uint, address(this));
+
+        uint256[] memory ids2 = new uint256[](1);
+        ids2[0] = blockId;
+        vm.prank(address(this));
+        vm.expectRevert(bytes("MasterControl: block disabled"));
+        master.applyBlocksToPool(pid2Uint, ids2);
+    }
+
+    function test_conflict_group_alternatives_prevent_dual_apply() public {
+        // create two pools
+        (PoolId pid1, address token1) = launchpad.createNewTokenAndInitWithNative("C1","C1",100 ether,3000,60,1<<96, IHooks(address(master)));
+        (PoolId pid2, address token2) = launchpad.createNewTokenAndInitWithNative("C2","C2",100 ether,3000,60,1<<96, IHooks(address(master)));
+        uint256 p1 = uint256(PoolId.unwrap(pid1));
+        uint256 p2 = uint256(PoolId.unwrap(pid2));
+
+        // set this contract as pool admin for both
+        vm.prank(address(launchpad));
+        access.setPoolAdmin(p1, address(this));
+        vm.prank(address(launchpad));
+        access.setPoolAdmin(p2, address(this));
+
+        // deploy mock targets and approve
+        MockTarget t1 = new MockTarget();
+        MockTarget t2 = new MockTarget();
+        bytes32 hp = keccak256("hookConflict");
+        bytes4 sel = MockTarget.doNothing.selector;
+        vm.prank(owner);
+        master.approveCommand(hp, address(t1), sel, "t1");
+        vm.prank(owner);
+        master.approveCommand(hp, address(t2), sel, "t2");
+
+        // Build two distinct blocks representing alternative implementations, same conflict group "alt"
+        MasterControl.Command[] memory cmdsA = new MasterControl.Command[](1);
+        cmdsA[0] = MasterControl.Command({hookPath: hp, target: address(t1), selector: sel, data: "", callType: MasterControl.CallType.Delegate});
+        MasterControl.Command[] memory cmdsB = new MasterControl.Command[](1);
+        cmdsB[0] = MasterControl.Command({hookPath: hp, target: address(t2), selector: sel, data: "", callType: MasterControl.CallType.Delegate});
+
+        uint256 a = 400;
+        uint256 b = 401;
+        vm.prank(owner);
+        master.createBlock(a, cmdsA, 0);
+        vm.prank(owner);
+        master.createBlock(b, cmdsB, 0);
+
+        // mark both with same conflict group
+        vm.prank(owner);
+        master.setBlockMetadata(a, false, bytes32("alt"));
+        vm.prank(owner);
+        master.setBlockMetadata(b, false, bytes32("alt"));
+
+        // apply block A to pool1 -> should succeed
+        uint256[] memory idsA = new uint256[](1);
+        idsA[0] = a;
+        vm.prank(address(this));
+        master.applyBlocksToPool(p1, idsA);
+
+        // attempting to apply block B to same pool should revert due to conflict group
+        uint256[] memory idsB = new uint256[](1);
+        idsB[0] = b;
+        vm.prank(address(this));
+        vm.expectRevert(bytes("MasterControl: conflict group active"));
+        master.applyBlocksToPool(p1, idsB);
+
+        // applying block B to pool2 (which has no active group) should succeed
+        vm.prank(address(this));
+        master.applyBlocksToPool(p2, idsB);
+        // verify that pool2 has command from block B
+        MasterControl.Command[] memory readBack2 = master.getCommands(p2, hp);
+        assertEq(readBack2.length, 1);
+        assertEq(readBack2[0].target, address(t2));
+    }
+
+    function test_setCommands_cannot_remove_immutable_command() public {
+        // create pool via launchpad
+        (PoolId pid, address tokenAddr) = launchpad.createNewTokenAndInitWithNative("S1","S1",100 ether,3000,60,1<<96, IHooks(address(master)));
+        uint256 pidUint = uint256(PoolId.unwrap(pid));
+
+        // set this contract as pool admin (force)
+        vm.prank(address(launchpad));
+        access.setPoolAdmin(pidUint, address(this));
+
+        // deploy mock target and approve
+        MockTarget t = new MockTarget();
+        bytes32 hookA = keccak256("hookSetA");
+        bytes4 sel = MockTarget.doNothing.selector;
+        vm.prank(owner);
+        master.approveCommand(hookA, address(t), sel, "noopA");
+
+        // create a block with one immutable command for hookA
+        MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
+        cmds[0] = MasterControl.Command({
+            hookPath: hookA,
+            target: address(t),
+            selector: sel,
+            data: abi.encodePacked(bytes1(0x01)), // immutable
+            callType: MasterControl.CallType.Delegate
+        });
+
+        uint256 blockId = 500;
+        vm.prank(owner);
+        master.createBlock(blockId, cmds, 0);
+        vm.prank(owner);
+        master.setBlockMetadata(blockId, true, bytes32(0));
+
+        // apply the block to the pool
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = blockId;
+        vm.prank(address(this));
+        master.applyBlocksToPool(pidUint, ids);
+
+        // Attempt to remove immutable command via setCommands (empty array) should revert
+        MasterControl.Command[] memory empty = new MasterControl.Command[](0);
+        vm.prank(address(this));
+        vm.expectRevert(bytes("MasterControl: cannot remove locked command"));
+        master.setCommands(pidUint, hookA, empty);
+
+        // Now perform a valid replacement that preserves the immutable command (same command re-inserted)
+        MasterControl.Command[] memory keep = new MasterControl.Command[](1);
+        keep[0] = MasterControl.Command({
+            hookPath: hookA,
+            target: address(t),
+            selector: sel,
+            data: abi.encodePacked(bytes1(0x01)),
+            callType: MasterControl.CallType.Delegate
+        });
+        vm.prank(address(this));
+        master.setCommands(pidUint, hookA, keep);
+
+        // Verify the command remains
+        MasterControl.Command[] memory readBack = master.getCommands(pidUint, hookA);
+        assertEq(readBack.length, 1);
+        assertEq(readBack[0].target, address(t));
+    }
+
 }

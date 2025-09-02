@@ -206,11 +206,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     function _beforeAddLiquidity(address sender, PoolKey calldata key, ModifyLiquidityParams calldata params, bytes calldata hookData) internal override returns (bytes4) {
         bytes32 hookPath = getPoolHookPath(key);
         uint256 poolId = getPoolId(key);
-        console.log("----_beforeAddLiquidity sender: ", sender);
-        console.log("tx.origin: ", tx.origin);
-        console.log("msg.sender: ", msg.sender);
- 
-        // Forward sender + typed args
+                                // Forward sender + typed args
         runHooks_BeforeAddLiquidity(poolId, hookPath, sender, key, params, hookData);
         return (this.beforeAddLiquidity.selector);
     }
@@ -225,10 +221,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     ) internal override returns (bytes4, BalanceDelta) {
         uint256 poolId = getPoolId(key);
         bytes32 hookPath = getPoolHookPath(key);
-        console.log("----_afterAddLiquidity sender: ", sender);
-        console.log("tx.origin: ", tx.origin);
-        console.log("msg.sender: ", msg.sender);
-        // Build full context including the BalanceDelta so delegate targets that parse bytes can extract it
+                                // Build full context including the BalanceDelta so delegate targets that parse bytes can extract it
         BalanceDelta updatedDelta = runHooks_AfterAddLiquidity(poolId, hookPath, sender, key, params, delta, hookData);
         return (this.afterAddLiquidity.selector, updatedDelta);
     }
@@ -243,10 +236,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     ) internal override returns (bytes4) {
         bytes32 hookPath = getPoolHookPath(key);
         uint256 poolId = getPoolId(key);
-        console.log("----_beforeRemoveLiquidity sender: ", sender);
-        console.log("tx.origin: ", tx.origin);
-        console.log("msg.sender: ", msg.sender);
-        runHooks_BeforeRemoveLiquidity(poolId, hookPath, sender, key, params, hookData);
+                                runHooks_BeforeRemoveLiquidity(poolId, hookPath, sender, key, params, hookData);
         return (this.beforeRemoveLiquidity.selector);
     }
  
@@ -260,10 +250,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     ) internal override returns (bytes4, BalanceDelta) {
         uint256 poolId = getPoolId(key);
         bytes32 hookPath = getPoolHookPath(key);
-        console.log("----_afterRemoveLiquidity sender: ", sender);
-        console.log("tx.origin: ", tx.origin);
-        console.log("msg.sender: ", msg.sender);
-        BalanceDelta updatedDelta = runHooks_AfterRemoveLiquidity(poolId, hookPath, sender, key, params, delta, hookData);
+                                BalanceDelta updatedDelta = runHooks_AfterRemoveLiquidity(poolId, hookPath, sender, key, params, delta, hookData);
         return (this.afterRemoveLiquidity.selector, updatedDelta);
     }
  
@@ -282,20 +269,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
                 key.hooks
             )
         );
-        console.log("");
-        console.log("----_beforeSwap sender: ", sender);
-        console.log("tx.origin: ", tx.origin);
-        console.log("msg.sender: ", msg.sender);
-        console.log("Swap Params - Amount Specified: ", params.amountSpecified);
-        console.log("Swap Params - Sqrt Price Limit: ", params.sqrtPriceLimitX96);
-        console.log("Swap Params - Zero For One: ", params.zeroForOne);
-        console.log("Pool Id: ");
-        console.logUint(poolId);
-        console.log("Hook Path: ");
-        console.logBytes32(getPoolHookPath(key));
-        console.log("");
- 
-        // Forward structured args to typed hook runners
+                                                                                                        // Forward structured args to typed hook runners
         (BeforeSwapDelta _bsd, uint24 _u) = runHooks_BeforeSwap(poolId, hookPath, sender, key, params, hookData);
         return (this.beforeSwap.selector, _bsd , _u);
     }
@@ -318,28 +292,9 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
                 key.hooks
             )
         );
-        console.log("");
-        console.log("----_afterSwap sender: ", sender);
-        console.log("tx.origin: ", tx.origin);
-        console.log("msg.sender: ", msg.sender);
-        console.log("MasterControl contract address: ", address(this));
-        console.log("Swap Params:");
-        console.log("Sender: ", sender);
- 
-        console.log("Pool Id: ");
-        console.logUint(poolId);
-        console.log("Hook Path: ");
-        console.logBytes32(getPoolHookPath(key));
-        console.log("Swap Params - Amount Specified: ", params.amountSpecified);
-        console.log("Swap Params - Sqrt Price Limit: ", params.sqrtPriceLimitX96);
-        console.log("Swap Params - Zero For One: ", params.zeroForOne);
-        console.log("Balance Delta - Amount 0: ", delta.amount0());
-        console.log("Balance Delta - Amount 1: ", delta.amount1());
-        console.log("");
-        // Call typed afterSwap runners; they return an int128 if applicable
+                                                                                                                                                // Call typed afterSwap runners; they return an int128 if applicable
         int128 updatedValue = runHooks_AfterSwap(poolId, hookPath, sender, key, params, delta, hookData);
-        console.log("After swap hook updated value: ");
-        return (this.afterSwap.selector, updatedValue);
+                return (this.afterSwap.selector, updatedValue);
     }
  
     // 5. Donate Hooks
@@ -362,27 +317,19 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
 
     // Passes a value (as bytes) through each command, updating it with each command's return value
     function runHooksWithValue(uint256 poolId, bytes32 hookPath, bytes memory context, bytes memory initialValue) internal returns (bytes memory) {
-        console.log("Running hooks with value:");
-        
-        Command[] storage cmds = poolCommands[poolId][hookPath];
+                Command[] storage cmds = poolCommands[poolId][hookPath];
         bytes memory value = initialValue;
-        console.log("Initial value: ");
-        console.logBytes32(bytes32(value));
-        console.log( "comands length: ", cmds.length);
-        for (uint i = 0; i < cmds.length; i++) {
+                                for (uint i = 0; i < cmds.length; i++) {
             bool success;
             bytes memory ret;
             if (cmds[i].callType == CallType.Delegate) {
                 // Log context length and first 10 bytes
-                console.log("runHooksWithValue: context.length = ", context.length);
-                bytes memory first10 = new bytes(context.length < 10 ? context.length : 10);
+                                bytes memory first10 = new bytes(context.length < 10 ? context.length : 10);
                 for (uint j = 0; j < first10.length; j++) {
                     first10[j] = context[j];
                 }
-                console.log("runHooksWithValue: first 10 bytes of context:");
-                for (uint j = 0; j < first10.length; j++) {
-                    console.log(uint8(first10[j]));
-                }
+                                for (uint j = 0; j < first10.length; j++) {
+                                    }
                 // Delegate case: append the current 'value' after the context so targets receiving both context and value can decode them
                 (success, ret) = cmds[i].target.delegatecall(abi.encodeWithSelector(cmds[i].selector, context, value, cmds[i].data));
             } else {
@@ -392,9 +339,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             require(success, "Hook command failed");
             value = ret;
         }
-        console.log("Final value after hooks: ");
-        console.logBytes32(bytes32(value));
-        return value;
+                        return value;
     }
 
     // --- Typed hook runners ---
