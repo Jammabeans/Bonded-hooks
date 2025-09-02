@@ -56,6 +56,26 @@ contract MasterControl is BaseHook, ERC1155 {
     mapping(uint256 => bool) public blockEnabled;
     // optional expiry timestamp (0 = no expiry)
     mapping(uint256 => uint64) public blockExpiresAt;
+    // Maximum number of commands permitted in a single block to guard against gas exhaustion
+    uint256 constant MAX_COMMANDS_PER_BLOCK = 64;
+    // Marker byte used in a Command.data payload to indicate the command should become immutable
+    // once applied to a pool. Owner may place this marker as the first byte of the `data` field.
+    bytes1 constant IMMUTABLE_DATA_FLAG = 0x01;
+    // Per-block/per-command immutability marker (blockId => commandIndex => immutable)
+    mapping(uint256 => mapping(uint256 => bool)) internal blockCommandImmutable;
+    // Per-pool lock registry: poolId => hookPath => target => selector => locked (immutable for that pool)
+    mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => bool)))) public commandLockedForPool;
+    // Maximum total commands that may be applied in a single applyBlocksToPool call
+    uint256 constant MAX_APPLY_COMMANDS = 256;
+// Bundle semantics (block-level):
+// If a block is marked immutable, any commands applied from that block are immutable for that pool.
+mapping(uint256 => bool) public blockImmutable;
+// Optional conflict group for a block — blocks sharing a non-zero group are mutually exclusive per-pool.
+mapping(uint256 => bytes32) public blockConflictGroup;
+// Tracks whether a conflict group is active for a given pool (poolId => conflictGroup => active)
+mapping(uint256 => mapping(bytes32 => bool)) public poolConflictActive;
+// Provenance: record origin blockId for each command applied to a pool
+mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint256)))) public commandOriginBlock;
 
     event BlockCreated(uint256 indexed blockId, bytes32 indexed hookPath, bytes32 commandsHash);
     event BlockRevoked(uint256 indexed blockId);
@@ -653,6 +673,65 @@ contract MasterControl is BaseHook, ERC1155 {
         return poolCommands[poolId][hookPath];
     }
 
+    /// @notice Replace the commands for a given pool and hookPath. Only callable by pool admin.
+    /// This will fail if any existing locked/immutable command would be removed by the replacement.
+    function setCommands(uint256 poolId, bytes32 hookPath, Command[] calldata cmds) external {
+        require(address(accessControl) != address(0), "AccessControl not configured");
+        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
+
+        // Ensure we do not remove any command that is locked via per-command lock or originated from an immutable block
+        Command[] storage existing = poolCommands[poolId][hookPath];
+        for (uint i = 0; i < existing.length; i++) {
+            // per-command explicit lock
+            if (commandLockedForPool[poolId][hookPath][existing[i].target][existing[i].selector]) {
+                bool found = false;
+                for (uint j = 0; j < cmds.length; j++) {
+                    if (cmds[j].target == existing[i].target && cmds[j].selector == existing[i].selector) {
+                        found = true;
+                        break;
+                    }
+                }
+                require(found, "MasterControl: cannot remove locked command");
+            }
+
+            // provenance-based immutability
+            uint256 origin = commandOriginBlock[poolId][hookPath][existing[i].target][existing[i].selector];
+            if (origin != 0 && blockImmutable[origin]) {
+                bool found2 = false;
+                for (uint j = 0; j < cmds.length; j++) {
+                    if (cmds[j].target == existing[i].target && cmds[j].selector == existing[i].selector) {
+                        found2 = true;
+                        break;
+                    }
+                }
+                require(found2, "MasterControl: cannot remove command from immutable block");
+            }
+        }
+
+        // Replace storage array atomically
+        delete poolCommands[poolId][hookPath];
+        for (uint k = 0; k < cmds.length; k++) {
+            poolCommands[poolId][hookPath].push(cmds[k]);
+            emit CommandsSet(poolId, hookPath, keccak256(abi.encode(cmds[k])));
+        }
+    }
+
+    /// @notice Clear commands for a given pool/hookPath. Only callable by pool admin.
+    /// Will revert if any existing command is locked for this pool (either per-command or by originating immutable block).
+    function clearCommands(uint256 poolId, bytes32 hookPath) external {
+        require(address(accessControl) != address(0), "AccessControl not configured");
+        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
+
+        Command[] storage existing = poolCommands[poolId][hookPath];
+        for (uint i = 0; i < existing.length; i++) {
+            require(!commandLockedForPool[poolId][hookPath][existing[i].target][existing[i].selector], "MasterControl: contains locked command");
+            uint256 origin = commandOriginBlock[poolId][hookPath][existing[i].target][existing[i].selector];
+            require(!(origin != 0 && blockImmutable[origin]), "MasterControl: contains immutable block command");
+        }
+        delete poolCommands[poolId][hookPath];
+        emit CommandsSet(poolId, hookPath, keccak256(abi.encodePacked("cleared")));
+    }
+
     // --- Command Block Management (ALL_REQUIRED semantics) ---
 
     /// @notice Owner creates a whitelisted block of commands.
@@ -661,6 +740,7 @@ contract MasterControl is BaseHook, ERC1155 {
         require(msg.sender == owner, "MasterControl: only owner");
         require(!blockEnabled[blockId], "MasterControl: block exists");
         require(commands.length > 0, "MasterControl: empty block");
+        require(commands.length <= MAX_COMMANDS_PER_BLOCK, "MasterControl: too many commands");
  
         // validate that each command is approved for its declared hookPath and push into storage
         for (uint i = 0; i < commands.length; i++) {
@@ -677,6 +757,11 @@ contract MasterControl is BaseHook, ERC1155 {
                     callType: commands[i].callType
                 })
             );
+            // If the owner encoded the immutability marker as the first byte of the Command.data,
+            // mark this command index in the block as immutable when applied to a pool.
+            if (commands[i].data.length > 0 && commands[i].data[0] == IMMUTABLE_DATA_FLAG) {
+                blockCommandImmutable[blockId][i] = true;
+            }
         }
  
         blockEnabled[blockId] = true;
@@ -688,6 +773,13 @@ contract MasterControl is BaseHook, ERC1155 {
         bytes32 representativeHook = keccak256(abi.encode(commands));
         emit BlockCreated(blockId, representativeHook, commandsHash);
     }
+/// @notice Owner may set block-level metadata after creating a block (immutable flag / conflict group).
+function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 conflictGroup) external {
+    require(msg.sender == owner, "MasterControl: only owner");
+    require(blockEnabled[blockId], "MasterControl: block not found");
+    blockImmutable[blockId] = immutableForPools;
+    blockConflictGroup[blockId] = conflictGroup;
+}
 
     /// @notice Revoke a block so it cannot be applied in the future.
     function revokeBlock(uint256 blockId) external {
@@ -707,6 +799,8 @@ contract MasterControl is BaseHook, ERC1155 {
         require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
         require(blockIds.length > 0, "MasterControl: no blocks");
 
+        // Pre-validate all referenced blocks and commands before applying (fail early)
+        uint256 totalCommands = 0;
         for (uint i = 0; i < blockIds.length; i++) {
             uint256 bId = blockIds[i];
             require(blockEnabled[bId], "MasterControl: block disabled");
@@ -717,21 +811,62 @@ contract MasterControl is BaseHook, ERC1155 {
                 require(exp >= uint64(block.timestamp), "MasterControl: block expired");
             }
 
+            // conflict group validation: disallow applying a block whose conflictGroup is already active on the pool
+            bytes32 cg = blockConflictGroup[bId];
+            if (cg != bytes32(0)) {
+                require(!poolConflictActive[poolId][cg], "MasterControl: conflict group active");
+            }
+
             Command[] storage cmds = blockCommands[bId];
- 
+            require(cmds.length <= MAX_COMMANDS_PER_BLOCK, "MasterControl: block too large");
+
             for (uint j = 0; j < cmds.length; j++) {
                 bytes32 cmdHook = cmds[j].hookPath;
                 require(cmdHook != bytes32(0), "MasterControl: block command hookPath zero");
                 require(commandEnabled[cmdHook][cmds[j].target][cmds[j].selector], "MasterControl: block contains unapproved command");
- 
+                totalCommands++;
+                require(totalCommands <= MAX_APPLY_COMMANDS, "MasterControl: too many commands in apply");
+            }
+        }
+
+        // All validation passed — now apply each block (append commands and emit events)
+        for (uint i = 0; i < blockIds.length; i++) {
+            uint256 bId = blockIds[i];
+            Command[] storage cmds = blockCommands[bId];
+
+            // Track a representative hookPath for the block (use first command's hookPath if present)
+            bytes32 representativeHook = bytes32(0);
+            if (cmds.length > 0) {
+                representativeHook = cmds[0].hookPath;
+            }
+
+            // If the block has a conflictGroup, mark it as active for this pool
+            bytes32 cg = blockConflictGroup[bId];
+            if (cg != bytes32(0)) {
+                poolConflictActive[poolId][cg] = true;
+            }
+
+            for (uint j = 0; j < cmds.length; j++) {
+                bytes32 cmdHook = cmds[j].hookPath;
+
                 // Append this command into the pool's command list for the command's hookPath
                 poolCommands[poolId][cmdHook].push(cmds[j]);
- 
+
+                // Record provenance for this command (origin block id)
+                commandOriginBlock[poolId][cmdHook][cmds[j].target][cmds[j].selector] = bId;
+
+                // If this command was flagged immutable in the originating block, or the block is immutable,
+                // mark it locked for this pool
+                if (blockCommandImmutable[bId][j] || blockImmutable[bId]) {
+                    commandLockedForPool[poolId][cmdHook][cmds[j].target][cmds[j].selector] = true;
+                }
+
                 bytes32 cmdHash = keccak256(abi.encode(cmds[j]));
                 emit CommandsSet(poolId, cmdHook, cmdHash);
             }
- 
-            emit BlockApplied(bId, poolId, bytes32(0));
+
+            // Emit BlockApplied with a representative hookPath (tests expect the hookPath to be emitted)
+            emit BlockApplied(bId, poolId, representativeHook);
         }
     }
 
