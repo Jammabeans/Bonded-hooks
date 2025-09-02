@@ -134,49 +134,80 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         masterControl.approveCommand(hookPath, address(pointsCommand), pointsCommand.setBasePointsPercent.selector, "setBasePointsPercent");
     }
 
+    // Helper: create a whitelisted block as owner and apply it to the pool as the given admin
+    function _createBlockAndApply(uint256 poolId, bytes32 hookPath, MasterControl.Command[] memory cmds, uint256 blockId, address admin) internal {
+        address mcOwner = masterControl.owner();
+        // Approve each command as owner (use each command's declared hookPath)
+        for (uint i = 0; i < cmds.length; i++) {
+            vm.prank(mcOwner);
+            masterControl.approveCommand(cmds[i].hookPath, cmds[i].target, cmds[i].selector, "auto");
+        }
+        // Owner creates the whitelisted block
+        vm.prank(mcOwner);
+        masterControl.createBlock(blockId, cmds, 0);
+        // Admin applies the block to the pool
+        uint256[] memory blockIds = new uint256[](1);
+        blockIds[0] = blockId;
+        vm.prank(admin);
+        masterControl.applyBlocksToPool(poolId, blockIds);
+    }
+
     function _registerCommandsForPool(bytes32 hookPath) internal {
+        // Build a single-command block that targets the PointsCommand.afterSwap
         MasterControl.Command[] memory commands = new MasterControl.Command[](1);
         commands[0] = MasterControl.Command({
+            hookPath: hookPath,
             target: address(pointsCommand),
             selector: pointsCommand.afterSwap.selector,
             data: "", // input will be provided as hookData at swap time
             callType: MasterControl.CallType.Delegate
         });
-
+ 
+        // Owner creates a whitelisted block
+        uint256 blockId = 1;
+        address mcOwner = masterControl.owner();
+        vm.prank(mcOwner);
+        masterControl.createBlock(blockId, commands, 0);
+ 
         // Set poolCreator and ensure it is recognized as pool admin for the test
         poolCreator = address(2);
         vm.deal(poolCreator, 10 ether);
-
+ 
         // Force AccessControl admin to poolCreator (for test setup)
         vm.prank(address(launchpad));
         accessControl.setPoolAdmin(poolIdUint, poolCreator);
-
-        // Register commands as poolCreator
+ 
+        // Apply the created block to the pool as the pool admin
+        uint256[] memory blockIds = new uint256[](1);
+        blockIds[0] = blockId;
         vm.prank(poolCreator);
-        masterControl.setCommands(poolIdUint, hookPath, commands);
+        masterControl.applyBlocksToPool(poolIdUint, blockIds);
     }
 
     function _configurePoolSettings(address memoryCardAddr) internal {
         MasterControl.Command[] memory setupCommands = new MasterControl.Command[](3);
         setupCommands[0] = MasterControl.Command({
+            hookPath: bytes32(0),
             target: address(pointsCommand),
             selector: pointsCommand.setBonusThreshold.selector,
             data: abi.encode(memoryCardAddr, poolIdUint, 0.0002 ether),
             callType: MasterControl.CallType.Delegate
         });
         setupCommands[1] = MasterControl.Command({
+            hookPath: bytes32(0),
             target: address(pointsCommand),
             selector: pointsCommand.setBonusPercent.selector,
             data: abi.encode(memoryCardAddr, poolIdUint, 20),
             callType: MasterControl.CallType.Delegate
         });
         setupCommands[2] = MasterControl.Command({
+            hookPath: bytes32(0),
             target: address(pointsCommand),
             selector: pointsCommand.setBasePointsPercent.selector,
             data: abi.encode(memoryCardAddr, poolIdUint, 20),
             callType: MasterControl.CallType.Delegate
         });
-
+ 
         vm.prank(poolCreator);
         masterControl.runCommandBatchForPool(poolIdUint, setupCommands);
     }
@@ -253,20 +284,23 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         uint256 minted = _performSwapAndReturnPoints(-0.001 ether);
         // Basic sanity: some points should be minted
         assert(minted > 0);
+        console.log("Points minted for 0.001 ETH swap:", minted);
     }
 
-    function test_setCommands_reverts_for_unapproved_command() public {
+    function test_createBlock_reverts_for_unapproved_command() public {
         bytes32 hookPath = keccak256(abi.encodePacked("unapprovedHook", key.currency0, key.currency1, key.fee));
         MasterControl.Command[] memory badCommands = new MasterControl.Command[](1);
         badCommands[0] = MasterControl.Command({
+            hookPath: hookPath,
             target: address(bytes20(hex"DEAD00000000000000000000000000000000BEEF")),
             selector: bytes4(0x12345678),
             data: "",
             callType: MasterControl.CallType.Delegate
         });
-
-        vm.prank(poolCreator);
-        vm.expectRevert(bytes("MasterControl: command not approved"));
-        masterControl.setCommands(poolIdUint, hookPath, badCommands);
+ 
+        address mcOwner = masterControl.owner();
+        vm.prank(mcOwner);
+        vm.expectRevert(bytes("MasterControl: command not approved for block"));
+        masterControl.createBlock(999, badCommands, 0);
     }
 }

@@ -28,8 +28,9 @@ interface IHook {
 contract MasterControl is BaseHook, ERC1155 {
 
     enum CallType { Delegate, Call }
-
+ 
     struct Command {
+        bytes32 hookPath;
         address target;
         bytes4 selector;
         bytes data; // optional extra data
@@ -41,12 +42,24 @@ contract MasterControl is BaseHook, ERC1155 {
     
     // Access control registry (maps poolId => admin)
     AccessControl public accessControl;
-
+ 
     // MasterControl admin (contract-level)
     address public owner;
-
+ 
     // Approved commands registry per hookPath: hookPath => target => selector => enabled
     mapping(bytes32 => mapping(address => mapping(bytes4 => bool))) public commandEnabled;
+
+    // --- Whitelisted command blocks (owner-managed, ALL_REQUIRED semantics) ---
+    // blockId => array of commands (the whitelisted command list for this block)
+    mapping(uint256 => Command[]) internal blockCommands;
+    // block enabled flag
+    mapping(uint256 => bool) public blockEnabled;
+    // optional expiry timestamp (0 = no expiry)
+    mapping(uint256 => uint64) public blockExpiresAt;
+
+    event BlockCreated(uint256 indexed blockId, bytes32 indexed hookPath, bytes32 commandsHash);
+    event BlockRevoked(uint256 indexed blockId);
+    event BlockApplied(uint256 indexed blockId, uint256 indexed poolId, bytes32 indexed hookPath);
 
     event CommandsSet(uint256 indexed poolId, bytes32 indexed hookPath, bytes32 commandsHash);
     
@@ -635,26 +648,91 @@ contract MasterControl is BaseHook, ERC1155 {
     // --- User Command Management ---
 
     
-        // Set commands for a pool (scoped) and hookPath — require pool admin and accept poolId directly
-        function setCommands(uint256 poolId, bytes32 hookPath, Command[] calldata commands) external {
-            require(address(accessControl) != address(0), "AccessControl not configured");
-            require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
-
-            // Ensure each command in the list is approved by owner for this hookPath
-            for (uint i = 0; i < commands.length; i++) {
-                require(commandEnabled[hookPath][commands[i].target][commands[i].selector], "MasterControl: command not approved");
-            }
-
-            delete poolCommands[poolId][hookPath];
-            for (uint i = 0; i < commands.length; i++) {
-                poolCommands[poolId][hookPath].push(commands[i]);
-            }
-            bytes32 commandsHash = keccak256(abi.encode(commands));
-            emit CommandsSet(poolId, hookPath, commandsHash);
-        }
 
     function getCommands(uint256 poolId, bytes32 hookPath) external view returns (Command[] memory) {
         return poolCommands[poolId][hookPath];
+    }
+
+    // --- Command Block Management (ALL_REQUIRED semantics) ---
+
+    /// @notice Owner creates a whitelisted block of commands.
+    /// blockId is an arbitrary numeric id chosen by owner; each Command must include its hookPath.
+    function createBlock(uint256 blockId, Command[] calldata commands, uint64 expiresAt) external {
+        require(msg.sender == owner, "MasterControl: only owner");
+        require(!blockEnabled[blockId], "MasterControl: block exists");
+        require(commands.length > 0, "MasterControl: empty block");
+ 
+        // validate that each command is approved for its declared hookPath and push into storage
+        for (uint i = 0; i < commands.length; i++) {
+            bytes32 cmdHook = commands[i].hookPath;
+            require(cmdHook != bytes32(0), "MasterControl: command hookPath zero");
+            require(commandEnabled[cmdHook][commands[i].target][commands[i].selector], "MasterControl: command not approved for block");
+            // push a copy into storage (preserve hookPath)
+            blockCommands[blockId].push(
+                Command({
+                    hookPath: cmdHook,
+                    target: commands[i].target,
+                    selector: commands[i].selector,
+                    data: commands[i].data,
+                    callType: commands[i].callType
+                })
+            );
+        }
+ 
+        blockEnabled[blockId] = true;
+        blockExpiresAt[blockId] = expiresAt;
+ 
+        // commandsHash uses targets/selectors/data/hookPath
+        bytes32 commandsHash = keccak256(abi.encode(commands));
+        // emit BlockCreated with a representative hookPath (hash of commands)
+        bytes32 representativeHook = keccak256(abi.encode(commands));
+        emit BlockCreated(blockId, representativeHook, commandsHash);
+    }
+
+    /// @notice Revoke a block so it cannot be applied in the future.
+    function revokeBlock(uint256 blockId) external {
+        require(msg.sender == owner, "MasterControl: only owner");
+        require(blockEnabled[blockId], "MasterControl: block not found");
+        blockEnabled[blockId] = false;
+        delete blockCommands[blockId];
+        blockExpiresAt[blockId] = 0;
+        emit BlockRevoked(blockId);
+    }
+
+    /// @notice Apply whitelisted block(s) to a pool. Only pool admin can call.
+    /// For ALL_REQUIRED semantics, applying a block will set the pool's commands for the hookPath
+    /// to be the ordered list of commands from the block once all commands are validated.
+    function applyBlocksToPool(uint256 poolId, uint256[] calldata blockIds) external {
+        require(address(accessControl) != address(0), "AccessControl not configured");
+        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
+        require(blockIds.length > 0, "MasterControl: no blocks");
+
+        for (uint i = 0; i < blockIds.length; i++) {
+            uint256 bId = blockIds[i];
+            require(blockEnabled[bId], "MasterControl: block disabled");
+
+            // ensure not expired
+            uint64 exp = blockExpiresAt[bId];
+            if (exp != 0) {
+                require(exp >= uint64(block.timestamp), "MasterControl: block expired");
+            }
+
+            Command[] storage cmds = blockCommands[bId];
+ 
+            for (uint j = 0; j < cmds.length; j++) {
+                bytes32 cmdHook = cmds[j].hookPath;
+                require(cmdHook != bytes32(0), "MasterControl: block command hookPath zero");
+                require(commandEnabled[cmdHook][cmds[j].target][cmds[j].selector], "MasterControl: block contains unapproved command");
+ 
+                // Append this command into the pool's command list for the command's hookPath
+                poolCommands[poolId][cmdHook].push(cmds[j]);
+ 
+                bytes32 cmdHash = keccak256(abi.encode(cmds[j]));
+                emit CommandsSet(poolId, cmdHook, cmdHash);
+            }
+ 
+            emit BlockApplied(bId, poolId, bytes32(0));
+        }
     }
 
     // --- Utility: Derive hook path from PoolKey (customize as needed) ---

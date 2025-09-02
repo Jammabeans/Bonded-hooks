@@ -38,6 +38,7 @@ contract MasterControlExtraTest is Test, Deployers {
     event CommandsSet(uint256 indexed poolId, bytes32 indexed hookPath, bytes32 commandsHash);
     event CommandApproved(bytes32 indexed hookPath, address indexed target, bytes4 selector, string name);
     event CommandToggled(bytes32 indexed hookPath, address indexed target, bytes4 selector, bool enabled);
+    event BlockApplied(uint256 indexed blockId, uint256 indexed poolId, bytes32 indexed hookPath);
 
     function setUp() public {
         deployFreshManagerAndRouters();
@@ -95,19 +96,38 @@ contract MasterControlExtraTest is Test, Deployers {
 
         // prepare commands array (empty is fine for testing runCommandBatchForPool)
         MasterControl.Command[] memory cmds = new MasterControl.Command[](0);
-
-        // non-admin (address(1)) should not be able to set commands
+ 
+        // Create an owner-created empty block to test applyBlocksToPool ACL
+        uint256 blockId = uint256(keccak256(abi.encodePacked(pidUint, uint256(1))));
+        address mcOwner = master.owner();
+        vm.prank(mcOwner);
+        // create empty block is not allowed (require non-empty), so create a no-op command that must be approved
+        MasterControl.Command[] memory oneCmd = new MasterControl.Command[](1);
+        oneCmd[0] = MasterControl.Command({ hookPath: hookPath, target: address(this), selector: bytes4(0x12345678), data: "", callType: MasterControl.CallType.Delegate });
+        
+        // approve then create block
+        master.approveCommand(hookPath, address(this), bytes4(0x12345678), "dummy");
+        vm.prank(mcOwner);
+        master.createBlock(blockId, oneCmd, 0);
+ 
+        uint256[] memory blockIds = new uint256[](1);
+        blockIds[0] = blockId;
+ 
+        // non-admin (address(1)) should not be able to apply blocks
         vm.prank(address(1));
         vm.expectRevert(bytes("MasterControl: not pool admin"));
-        master.setCommands(pidUint, hookPath, cmds);
-
+        master.applyBlocksToPool(pidUint, blockIds);
+ 
         // non-admin should not be able to run pool-scoped batch (even empty)
         vm.prank(address(1));
         vm.expectRevert(bytes("MasterControl: not pool admin"));
         master.runCommandBatchForPool(pidUint, cmds);
-
-        // admin (this test) should be able to setCommands and runCommandBatchForPool
-        master.setCommands(pidUint, hookPath, cmds);
+ 
+        // admin (this test) should be able to apply blocks and runCommandBatchForPool
+        vm.prank(address(launchpad));
+        access.setPoolAdmin(pidUint, address(this));
+        vm.prank(address(this));
+        master.applyBlocksToPool(pidUint, blockIds);
         master.runCommandBatchForPool(pidUint, cmds);
     }
 
@@ -129,27 +149,39 @@ contract MasterControlExtraTest is Test, Deployers {
         // Build commands array (single dummy command)
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
         cmds[0] = MasterControl.Command({
+            hookPath: hookPath,
             target: address(this),
             selector: bytes4(0x11111111),
             data: "",
             callType: MasterControl.CallType.Delegate
         });
-
+ 
         // Approve the command as owner
         vm.prank(owner);
         master.approveCommand(hookPath, address(this), bytes4(0x11111111), "dummy");
-
-        // admin (this test) sets commands successfully
-        master.setCommands(pidUint, hookPath, cmds);
-
+ 
+        // Owner creates a whitelisted block containing the approved command, then pool admin applies it.
+        uint256 blockId = 1001;
+        vm.prank(owner);
+        master.createBlock(blockId, cmds, 0);
+ 
+        // set this contract as pool admin and apply the block
+        vm.prank(address(launchpad));
+        access.setPoolAdmin(pidUint, address(this));
+        uint256[] memory blockIds = new uint256[](1);
+        blockIds[0] = blockId;
+        vm.prank(address(this));
+        master.applyBlocksToPool(pidUint, blockIds);
+ 
         // Now owner toggles the command off
         vm.prank(owner);
         master.setCommandEnabled(hookPath, address(this), bytes4(0x11111111), false);
-
-        // Attempts to setCommands should now fail because command not approved
+ 
+        // Attempts to apply the same block should now fail because command not approved
         vm.prank(address(this)); // ensure caller is admin (this test)
-        vm.expectRevert(bytes("MasterControl: command not approved"));
-        master.setCommands(pidUint, hookPath, cmds);
+        vm.expectRevert(bytes("MasterControl: block contains unapproved command"));
+       
+        master.applyBlocksToPool(pidUint, blockIds);
     }
 
     // Group C: runCommandBatchForPool behaviors (delegate vs call, error bubbling)
@@ -163,6 +195,7 @@ contract MasterControlExtraTest is Test, Deployers {
         // prepare delegate command
         MasterControl.Command[] memory cmds = new MasterControl.Command[](2);
         cmds[0] = MasterControl.Command({
+            hookPath: bytes32(0),
             target: address(target),
             selector: MockTarget.doDelegate.selector,
             data: abi.encodePacked(bytes("hello")),
@@ -170,6 +203,7 @@ contract MasterControlExtraTest is Test, Deployers {
         });
         // prepare external call command
         cmds[1] = MasterControl.Command({
+            hookPath: bytes32(0),
             target: address(target),
             selector: MockTarget.doCall.selector,
             data: abi.encodePacked(bytes("world")),
@@ -191,6 +225,7 @@ contract MasterControlExtraTest is Test, Deployers {
 
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
         cmds[0] = MasterControl.Command({
+            hookPath: bytes32(0),
             target: address(target),
             selector: MockTarget.doDelegateRevert.selector,
             data: "",
@@ -226,16 +261,23 @@ contract MasterControlExtraTest is Test, Deployers {
         // set commands as pool admin (this test)
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
         cmds[0] = MasterControl.Command({
+            hookPath: hookPath,
             target: address(pc),
             selector: pc.afterSwap.selector,
             data: "",
             callType: MasterControl.CallType.Delegate
         });
-
-        // ensure this contract is pool admin
+ 
+        // Owner creates a whitelisted block and pool admin applies it.
+        uint256 blockId = 1000;
+        vm.prank(owner);
+        master.createBlock(blockId, cmds, 0);
         vm.prank(address(launchpad));
         access.setPoolAdmin(pidUint, address(this));
-        master.setCommands(pidUint, hookPath, cmds);
+        uint256[] memory blockIds = new uint256[](1);
+        blockIds[0] = blockId;
+        vm.prank(address(this));
+        master.applyBlocksToPool(pidUint, blockIds);
 
         // configure memory card values via runCommandBatchForPool (simulate admin)
         bytes memory memAddr = abi.encode(address(new MemoryCard()));
@@ -243,6 +285,7 @@ contract MasterControlExtraTest is Test, Deployers {
         // Call setBonusThreshold via MasterControl.runCommandBatchForPool
         MasterControl.Command[] memory setup = new MasterControl.Command[](1);
         setup[0] = MasterControl.Command({
+            hookPath: bytes32(0),
             target: address(pc),
             selector: pc.setBonusPercent.selector,
             data: abi.encode(address(new MemoryCard()), pidUint, 50),
@@ -283,22 +326,31 @@ contract MasterControlExtraTest is Test, Deployers {
         uint256 pidUint = uint256(PoolId.unwrap(pid));
         ReturnBytesTarget rt = new ReturnBytesTarget();
 
+        // set commands
+        bytes32 hookPath = keccak256(abi.encodePacked("someHook", uint256(pidUint)));
+        vm.prank(owner);
+        master.approveCommand(hookPath, address(rt), ReturnBytesTarget.transform.selector, "transform");
+ 
         // prepare a command that calls transform via Call (external call)
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
         cmds[0] = MasterControl.Command({
+            hookPath: hookPath,
             target: address(rt),
             selector: ReturnBytesTarget.transform.selector,
             data: abi.encodePacked(bytes("abc")),
             callType: MasterControl.CallType.Call
         });
-
+ 
+        // Owner creates block and pool admin applies it
+        uint256 blockId = 1003;
+        vm.prank(owner);
+        master.createBlock(blockId, cmds, 0);
         vm.prank(address(launchpad));
         access.setPoolAdmin(pidUint, address(this));
-        // set commands
-        bytes32 hookPath = keccak256(abi.encodePacked("someHook", uint256(pidUint)));
-        vm.prank(owner);
-        master.approveCommand(hookPath, address(rt), ReturnBytesTarget.transform.selector, "transform");
-        master.setCommands(pidUint, hookPath, cmds);
+        uint256[] memory blockIds = new uint256[](1);
+        blockIds[0] = blockId;
+        vm.prank(address(this));
+        master.applyBlocksToPool(pidUint, blockIds);
 
         // call the internal runHooksWithValue via a public runner (we don't have one)
         // Instead perform runCommandBatchForPool with a command that returns transformed bytes and ensure no revert
@@ -336,19 +388,28 @@ contract MasterControlExtraTest is Test, Deployers {
 
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
         cmds[0] = MasterControl.Command({
+            hookPath: hookPath,
             target: address(this),
             selector: bytes4(0xabcdef01),
             data: "",
             callType: MasterControl.CallType.Delegate
         });
-
+ 
         vm.prank(address(launchpad));
         access.setPoolAdmin(pidUint, address(this));
-
-        vm.expectEmit(true, true, false, true, address(master));
-        emit CommandsSet(pidUint, hookPath, keccak256(abi.encode(cmds)));
+ 
+        // Owner creates a block and admin applies it. Expect BlockApplied event.
+        uint256 blockId = 1004;
+        vm.prank(owner);
+        master.createBlock(blockId, cmds, 0);
+ 
+        
+        uint256[] memory blockIds = new uint256[](1);
+        blockIds[0] = blockId;
         vm.prank(address(this));
-        master.setCommands(pidUint, hookPath, cmds);
+        vm.expectEmit(true, true, true, true, address(master));
+        emit BlockApplied(blockId, pidUint, hookPath);
+        master.applyBlocksToPool(pidUint, blockIds);
     }
 
     // Group F: Edge cases & security
@@ -374,27 +435,36 @@ contract MasterControlExtraTest is Test, Deployers {
         bytes32 hookPath = keccak256(abi.encodePacked("afterSwap", uint256(pidUint)));
 
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
-        cmds[0] = MasterControl.Command({target: address(this), selector: bytes4(0xabcdef01), data: "", callType: MasterControl.CallType.Delegate});
-
+        cmds[0] = MasterControl.Command({hookPath: hookPath, target: address(this), selector: bytes4(0xabcdef01), data: "", callType: MasterControl.CallType.Delegate});
+ 
         // owner approves
         vm.prank(owner);
         master.approveCommand(hookPath, address(this), bytes4(0xabcdef01), "ok");
-
+ 
         // ensure this contract is admin
         vm.prank(address(launchpad));
         access.setPoolAdmin(pidUint, address(this));
-
-        // setCommands succeeds
-        master.setCommands(pidUint, hookPath, cmds);
-
+ 
+        // Owner creates a block and admin applies it (set commands)
+        uint256 blockId = 1005;
+        vm.prank(owner);
+        master.createBlock(blockId, cmds, 0);
+        vm.prank(address(launchpad));
+        access.setPoolAdmin(pidUint, address(this));
+        uint256[] memory blockIds = new uint256[](1);
+        blockIds[0] = blockId;
+        vm.prank(address(this));
+        master.applyBlocksToPool(pidUint, blockIds);
+ 
         // owner toggles off
         vm.prank(owner);
         master.setCommandEnabled(hookPath, address(this), bytes4(0xabcdef01), false);
-
-        // now setCommands should revert due to command not approved
+ 
+        // now applying the same block should revert due to command not approved
         vm.prank(address(this));
-        vm.expectRevert(bytes("MasterControl: command not approved"));
-        master.setCommands(pidUint, hookPath, cmds);
+        vm.expectRevert(bytes("MasterControl: block contains unapproved command"));
+        
+        master.applyBlocksToPool(pidUint, blockIds);
     }
 
     function test_setCommands_with_empty_array_clears_commands() public {
@@ -407,21 +477,25 @@ contract MasterControlExtraTest is Test, Deployers {
         master.approveCommand(hookPath, address(this), bytes4(0xabcdef01), "c");
 
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
-        cmds[0] = MasterControl.Command({target: address(this), selector: bytes4(0xabcdef01), data: "", callType: MasterControl.CallType.Delegate});
-
+        cmds[0] = MasterControl.Command({hookPath: hookPath, target: address(this), selector: bytes4(0xabcdef01), data: "", callType: MasterControl.CallType.Delegate});
+ 
         // set admin
         vm.prank(address(launchpad));
         access.setPoolAdmin(pidUint, address(this));
-
-        // set commands
-        master.setCommands(pidUint, hookPath, cmds);
-
-        // set empty array to clear
-        MasterControl.Command[] memory none = new MasterControl.Command[](0);
-        master.setCommands(pidUint, hookPath, none);
-
-        // getCommands should return empty
+ 
+        // Owner creates a block and admin applies it (set commands)
+        uint256 blockId = 1006;
+        vm.prank(owner);
+        master.createBlock(blockId, cmds, 0);
+        vm.prank(address(launchpad));
+        access.setPoolAdmin(pidUint, address(this));
+        uint256[] memory blockIds = new uint256[](1);
+        blockIds[0] = blockId;
+        vm.prank(address(this));
+        master.applyBlocksToPool(pidUint, blockIds);
+ 
+        // getCommands should return the applied commands
         MasterControl.Command[] memory readBack = master.getCommands(pidUint, hookPath);
-        assertEq(readBack.length, 0);
+        assertEq(readBack.length, 1);
     }
 }
