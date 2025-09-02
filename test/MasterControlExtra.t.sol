@@ -118,17 +118,20 @@ contract MasterControlExtraTest is Test, Deployers {
         vm.expectRevert(bytes("MasterControl: not pool admin"));
         master.applyBlocksToPool(pidUint, blockIds);
  
-        // non-admin should not be able to run pool-scoped batch (even empty)
+        // runCommandBatchForPool is deprecated and now always reverts with a deprecation message.
         vm.prank(address(1));
-        vm.expectRevert(bytes("MasterControl: not pool admin"));
+        vm.expectRevert(bytes("MasterControl: runCommandBatchForPool deprecated; use setPoolConfigValue"));
         master.runCommandBatchForPool(pidUint, cmds);
  
-        // admin (this test) should be able to apply blocks and runCommandBatchForPool
+        // admin (this test) should be able to apply blocks
         vm.prank(address(launchpad));
         access.setPoolAdmin(pidUint, address(this));
         vm.prank(address(this));
         master.applyBlocksToPool(pidUint, blockIds);
-        master.runCommandBatchForPool(pidUint, cmds);
+ 
+        // Owner can still run the global runCommandBatch
+        vm.prank(owner);
+        master.runCommandBatch(cmds);
     }
 
     // Group B: Command approval and enforcement
@@ -184,14 +187,15 @@ contract MasterControlExtraTest is Test, Deployers {
         master.applyBlocksToPool(pidUint, blockIds);
     }
 
-    // Group C: runCommandBatchForPool behaviors (delegate vs call, error bubbling)
+    // Group C: runCommandBatch behaviors (delegate vs call, error bubbling)
+    // runCommandBatchForPool has been deprecated; owner may still run runCommandBatch.
     function test_runCommandBatch_delegate_and_call_execute() public {
         // create pool
         (PoolId pid,) = launchpad.createNewTokenAndInitWithNative("C1","C1",100 ether,3000,60,1<<96, IHooks(address(master)));
         uint256 pidUint = uint256(PoolId.unwrap(pid));
         // prepare mock target
         MockTarget target = new MockTarget();
-
+ 
         // prepare delegate command
         MasterControl.Command[] memory cmds = new MasterControl.Command[](2);
         cmds[0] = MasterControl.Command({
@@ -209,20 +213,21 @@ contract MasterControlExtraTest is Test, Deployers {
             data: abi.encodePacked(bytes("world")),
             callType: MasterControl.CallType.Call
         });
-
-        // set as pool admin
+ 
+        // set as pool admin (not used for owner-run batches, kept for completeness)
         vm.prank(address(launchpad));
         access.setPoolAdmin(pidUint, address(this));
-
-        // run batch; should not revert
-        master.runCommandBatchForPool(pidUint, cmds);
+ 
+        // owner runs the global runCommandBatch; should not revert
+        vm.prank(owner);
+        master.runCommandBatch(cmds);
     }
 
     function test_runCommandBatch_reverts_on_target_failure() public {
         (PoolId pid,) = launchpad.createNewTokenAndInitWithNative("C2","C2",100 ether,3000,60,1<<96, IHooks(address(master)));
         uint256 pidUint = uint256(PoolId.unwrap(pid));
         MockTarget target = new MockTarget();
-
+ 
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
         cmds[0] = MasterControl.Command({
             hookPath: bytes32(0),
@@ -231,12 +236,14 @@ contract MasterControlExtraTest is Test, Deployers {
             data: "",
             callType: MasterControl.CallType.Delegate
         });
-
+ 
         vm.prank(address(launchpad));
         access.setPoolAdmin(pidUint, address(this));
-
+ 
+        // Owner running the batch should bubble delegatecall revert
+        vm.prank(owner);
         vm.expectRevert(bytes("Delegatecall failed"));
-        master.runCommandBatchForPool(pidUint, cmds);
+        master.runCommandBatch(cmds);
     }
 
     // Group D: Hook execution end-to-end - use PointsCommand to mint via swap
@@ -279,23 +286,18 @@ contract MasterControlExtraTest is Test, Deployers {
         vm.prank(address(this));
         master.applyBlocksToPool(pidUint, blockIds);
 
-        // configure memory card values via runCommandBatchForPool (simulate admin)
-        bytes memory memAddr = abi.encode(address(new MemoryCard()));
-        // Directly configure MemoryCard via PointsCommand setters would be better, but keep simple:
-        // Call setBonusThreshold via MasterControl.runCommandBatchForPool
-        MasterControl.Command[] memory setup = new MasterControl.Command[](1);
-        setup[0] = MasterControl.Command({
-            hookPath: bytes32(0),
-            target: address(pc),
-            selector: pc.setBonusPercent.selector,
-            data: abi.encode(address(new MemoryCard()), pidUint, 50),
-            callType: MasterControl.CallType.Delegate
-        });
-
+        // Configure MemoryCard and whitelist keys via owner, then pool admin writes via safe API.
+        address mcAddr = address(new MemoryCard());
+        vm.prank(owner);
+        master.setMemoryCard(mcAddr);
+        vm.prank(owner);
+        master.setAllowedConfigKey(keccak256("bonus_percent"), true);
+        // ensure this contract is pool admin
         vm.prank(address(launchpad));
-        access.setPoolAdmin(pidUint, address(this)); // ensure admin
+        access.setPoolAdmin(pidUint, address(this));
+        // pool admin writes the per-pool config
         vm.prank(address(this));
-        master.runCommandBatchForPool(pidUint, setup);
+        master.setPoolConfigValue(pidUint, keccak256("bonus_percent"), abi.encode(50));
 
         // perform a swap to trigger afterSwap (basic check: doesn't revert)
         PointsCommand.AfterSwapInput memory afterSwapInput = PointsCommand.AfterSwapInput({
@@ -353,8 +355,9 @@ contract MasterControlExtraTest is Test, Deployers {
         master.applyBlocksToPool(pidUint, blockIds);
 
         // call the internal runHooksWithValue via a public runner (we don't have one)
-        // Instead perform runCommandBatchForPool with a command that returns transformed bytes and ensure no revert
-        master.runCommandBatchForPool(pidUint, cmds);
+        // Instead perform owner-run runCommandBatch with a command that returns transformed bytes and ensure no revert
+        vm.prank(owner);
+        master.runCommandBatch(cmds);
 
         assertTrue(true);
     }

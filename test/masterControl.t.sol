@@ -185,31 +185,24 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
     }
 
     function _configurePoolSettings(address memoryCardAddr) internal {
-        MasterControl.Command[] memory setupCommands = new MasterControl.Command[](3);
-        setupCommands[0] = MasterControl.Command({
-            hookPath: bytes32(0),
-            target: address(pointsCommand),
-            selector: pointsCommand.setBonusThreshold.selector,
-            data: abi.encode(memoryCardAddr, poolIdUint, 0.0002 ether),
-            callType: MasterControl.CallType.Delegate
-        });
-        setupCommands[1] = MasterControl.Command({
-            hookPath: bytes32(0),
-            target: address(pointsCommand),
-            selector: pointsCommand.setBonusPercent.selector,
-            data: abi.encode(memoryCardAddr, poolIdUint, 20),
-            callType: MasterControl.CallType.Delegate
-        });
-        setupCommands[2] = MasterControl.Command({
-            hookPath: bytes32(0),
-            target: address(pointsCommand),
-            selector: pointsCommand.setBasePointsPercent.selector,
-            data: abi.encode(memoryCardAddr, poolIdUint, 20),
-            callType: MasterControl.CallType.Delegate
-        });
+        // Owner must register the MemoryCard and whitelist allowed keys.
+        address mcOwner = masterControl.owner();
+        vm.prank(mcOwner);
+        masterControl.setMemoryCard(memoryCardAddr);
+        vm.prank(mcOwner);
+        masterControl.setAllowedConfigKey(keccak256("bonus_threshold"), true);
+        vm.prank(mcOwner);
+        masterControl.setAllowedConfigKey(keccak256("bonus_percent"), true);
+        vm.prank(mcOwner);
+        masterControl.setAllowedConfigKey(keccak256("base_points_percent"), true);
  
+        // Pool admin writes per-pool values via the safe API.
         vm.prank(poolCreator);
-        masterControl.runCommandBatchForPool(poolIdUint, setupCommands);
+        masterControl.setPoolConfigValue(poolIdUint, keccak256("bonus_threshold"), abi.encode(0.0002 ether));
+        vm.prank(poolCreator);
+        masterControl.setPoolConfigValue(poolIdUint, keccak256("bonus_percent"), abi.encode(20));
+        vm.prank(poolCreator);
+        masterControl.setPoolConfigValue(poolIdUint, keccak256("base_points_percent"), abi.encode(20));
     }
 
     function _performSwapAndReturnPoints(int256 amount0) internal returns (uint256) {

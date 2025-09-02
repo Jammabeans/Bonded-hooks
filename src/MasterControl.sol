@@ -25,6 +25,12 @@ interface IHook {
     // Add other hook entrypoints as needed...
 }
 
+// Minimal MemoryCard interface used by MasterControl for pool-scoped config reads/writes
+interface IMemoryCard {
+    function read(address user, bytes32 key) external view returns (bytes memory);
+    function write(bytes32 key, bytes calldata value) external;
+}
+
 contract MasterControl is BaseHook, ERC1155 {
 
     enum CallType { Delegate, Call }
@@ -114,11 +120,48 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     
     // Address of the authorized PoolLaunchPad contract that may register pool admins
     address public poolLaunchPad;
-
+    
+    // MemoryCard used for storing per-pool configuration (owner must set)
+    address public memoryCard;
+    // Whitelist of allowed config keys for pool admin writes (owner-managed)
+    mapping(bytes32 => bool) public allowedConfigKey;
+    
+    /// @notice Owner-only: set the MemoryCard address used for pool config storage
+    function setMemoryCard(address _mc) external {
+        require(msg.sender == owner, "MasterControl: only owner");
+        require(_mc != address(0), "MasterControl: zero address");
+        memoryCard = _mc;
+    }
+    
+    /// @notice Owner-only: toggle allowed config keys that pool admins may write
+    /// Pass the canonical key constant (e.g., KEY_BONUS_THRESHOLD) as `key`
+    function setAllowedConfigKey(bytes32 key, bool allowed) external {
+        require(msg.sender == owner, "MasterControl: only owner");
+        allowedConfigKey[key] = allowed;
+    }
+    
     /// @notice Owner-only: set the PoolLaunchPad address the MasterControl will accept registrations from
     function setPoolLaunchPad(address _pad) external {
         require(msg.sender == owner, "MasterControl: only owner");
         poolLaunchPad = _pad;
+    }
+    
+    /// @notice Pool-admin API to set a per-pool config value into MemoryCard.
+    /// storageKey = keccak256(abi.encode(configKeyHash, poolId))
+    function setPoolConfigValue(uint256 poolId, bytes32 configKeyHash, bytes calldata value) external {
+        require(address(accessControl) != address(0), "AccessControl not configured");
+        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
+        require(memoryCard != address(0), "MasterControl: memoryCard not set");
+        require(allowedConfigKey[configKeyHash], "MasterControl: key not allowed");
+        bytes32 storageKey = keccak256(abi.encode(configKeyHash, poolId));
+        IMemoryCard(memoryCard).write(storageKey, value);
+    }
+    
+    /// @notice Read a per-pool config value from MemoryCard (reads MasterControl's slot)
+    function readPoolConfigValue(uint256 poolId, bytes32 configKeyHash) external view returns (bytes memory) {
+        require(memoryCard != address(0), "MasterControl: memoryCard not set");
+        bytes32 storageKey = keccak256(abi.encode(configKeyHash, poolId));
+        return IMemoryCard(memoryCard).read(address(this), storageKey);
     }
 
     /// @notice Called by the PoolLaunchPad when it initializes a pool to register the pool admin.
@@ -548,10 +591,11 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         }
     }
 
-    // Batch run of Command[] for setup (global admin utility)
-    // Now this function invokes commands using the typed-caller convention:
-    // abi.encodeWithSelector(selector, <typed params...>, bytes extra)
+    // Batch run of Command[] for setup (owner-only utility)
+    // This function is now owner-restricted to prevent arbitrary delegatecalls from non-trusted callers.
+    // It still invokes commands using the typed-caller convention: abi.encodeWithSelector(selector, <typed params...>, bytes extra)
     function runCommandBatch(Command[] calldata commands) external {
+        require(msg.sender == owner, "MasterControl: only owner");
         for (uint i = 0; i < commands.length; i++) {
             bool success;
             // Each Command.data is treated as the trailing `bytes extra` parameter for typed functions
@@ -568,26 +612,11 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             }
         }
     }
-
-    // Pool-scoped batch runner (requires pool admin) - now accepts poolId directly
-    function runCommandBatchForPool(uint256 poolId, Command[] calldata commands) external {
-        require(address(accessControl) != address(0), "AccessControl not configured");
-        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
-
-        for (uint i = 0; i < commands.length; i++) {
-            bool success;
-            if (commands[i].callType == CallType.Delegate) {
-                (success, ) = commands[i].target.delegatecall(
-                    abi.encodeWithSelector(commands[i].selector, commands[i].data)
-                );
-                require(success, "Delegatecall failed");
-            } else if (commands[i].callType == CallType.Call) {
-                (success, ) = commands[i].target.call(
-                    abi.encodeWithSelector(commands[i].selector, commands[i].data)
-                );
-                require(success, "Call failed");
-            }
-        }
+    
+    // Pool-scoped batch runner deprecated for security reasons.
+    // Pool admins should use the explicit setPoolConfigValue API to modify MemoryCard-backed configuration.
+    function runCommandBatchForPool(uint256 /*poolId*/, Command[] calldata /*commands*/) external {
+        revert("MasterControl: runCommandBatchForPool deprecated; use setPoolConfigValue");
     }
 
     function runHooks(uint256 poolId, bytes32 hookPath, bytes memory context) internal {

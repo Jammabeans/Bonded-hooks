@@ -112,25 +112,19 @@ contract PointsCommand {
 
     // --- Stateless admin "setters"/"getters" (callable via dispatcher with encoded input) ---
 
-    function setBonusThreshold(bytes calldata data) external {
-        // Expect encoded (address memoryCardAddr, uint256 poolId, uint256 newThreshold)
-        (address memoryCardAddr, uint256 poolId, uint256 newThreshold) = abi.decode(data, (address, uint256, uint256));
-        bytes32 storageKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolId));
-        IMemoryCard(memoryCardAddr).write(storageKey, abi.encode(newThreshold));
+    // Deprecated setters: pool admins should use MasterControl.setPoolConfigValue instead.
+    // These external functions are intentionally disabled to prevent arbitrary external writes
+    // through PointsCommand. They remain present to preserve selectors for historical approvals.
+    function setBonusThreshold(bytes calldata) external {
+        revert("PointsCommand: deprecated; use MasterControl.setPoolConfigValue");
     }
-
-    function setBonusPercent(bytes calldata data) external {
-        // Expect encoded (address memoryCardAddr, uint256 poolId, uint256 newPercent)
-        (address memoryCardAddr, uint256 poolId, uint256 newPercent) = abi.decode(data, (address, uint256, uint256));
-        bytes32 storageKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolId));
-        IMemoryCard(memoryCardAddr).write(storageKey, abi.encode(newPercent));
+    
+    function setBonusPercent(bytes calldata) external {
+        revert("PointsCommand: deprecated; use MasterControl.setPoolConfigValue");
     }
-
-    function setBasePointsPercent(bytes calldata data) external {
-        // Expect encoded (address memoryCardAddr, uint256 poolId, uint256 newPercent)
-        (address memoryCardAddr, uint256 poolId, uint256 newPercent) = abi.decode(data, (address, uint256, uint256));
-        bytes32 storageKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolId));
-        IMemoryCard(memoryCardAddr).write(storageKey, abi.encode(newPercent));
+    
+    function setBasePointsPercent(bytes calldata) external {
+        revert("PointsCommand: deprecated; use MasterControl.setPoolConfigValue");
     }
 
     // This function will resolve to MasterControl's mintPoints via delegatecall
