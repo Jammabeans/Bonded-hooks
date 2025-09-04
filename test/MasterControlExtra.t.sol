@@ -54,6 +54,9 @@ contract MasterControlExtraTest is Test, Deployers {
 
         launchpad = new PoolLaunchPad(manager, access);
         access.setPoolLaunchPad(address(launchpad));
+
+        vm.prank(owner);
+        master.setPoolLaunchPad(address(launchpad));
     }
 
      function test_poolLaunchPad_registers_initial_admin() public {

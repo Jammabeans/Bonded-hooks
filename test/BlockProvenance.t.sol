@@ -37,6 +37,8 @@ contract BlockProvenanceTest is Test, Deployers {
 
         launchpad = new PoolLaunchPad(manager, access);
         access.setPoolLaunchPad(address(launchpad));
+        vm.prank(owner);
+        master.setPoolLaunchPad(address(launchpad));
     }
 
     function test_apply_immutable_block_prevents_removal_and_conflict_groups() public {

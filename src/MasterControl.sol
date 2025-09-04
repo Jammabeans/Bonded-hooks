@@ -71,6 +71,13 @@ contract MasterControl is BaseHook, ERC1155 {
     mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => bool)))) public commandLockedForPool;
     // Maximum total commands that may be applied in a single applyBlocksToPool call
     uint256 constant MAX_APPLY_COMMANDS = 256;
+    // Address of the authorized PoolLaunchPad contract that may register pool admins
+    address public poolLaunchPad;
+    
+    // MemoryCard used for storing per-pool configuration (owner must set)
+    address public memoryCard;
+    // Whitelist of allowed config keys for pool admin writes (owner-managed)
+    mapping(bytes32 => bool) public allowedConfigKey;
 // Bundle semantics (block-level):
 // If a block is marked immutable, any commands applied from that block are immutable for that pool.
 mapping(uint256 => bool) public blockImmutable;
@@ -119,16 +126,8 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         require(msg.sender == owner, "MasterControl: only owner");
         require(_accessControl != address(0), "MasterControl: zero address");
         accessControl = AccessControl(_accessControl);
-    }
-    
-    // Address of the authorized PoolLaunchPad contract that may register pool admins
-    address public poolLaunchPad;
-    
-    // MemoryCard used for storing per-pool configuration (owner must set)
-    address public memoryCard;
-    // Whitelist of allowed config keys for pool admin writes (owner-managed)
-    mapping(bytes32 => bool) public allowedConfigKey;
-    
+    }    
+        
     /// @notice Owner-only: set the MemoryCard address used for pool config storage
     function setMemoryCard(address _mc) external {
         require(msg.sender == owner, "MasterControl: only owner");
@@ -227,6 +226,8 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         PoolKey calldata key,
         uint160 sqrtPriceX96
     ) internal override returns (bytes4) {
+        require(poolLaunchPad != address(0), "MasterControl: poolLaunchPad not set");
+        require(sender == poolLaunchPad, "MasterControl: only PoolLaunchPad");
         bytes32 hookPath = getPoolHookPath(key);
         uint256 poolId = getPoolId(key);
         // Forward full typed parameters to hook commands: sender, key, sqrtPriceX96
