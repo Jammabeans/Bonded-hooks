@@ -231,6 +231,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         uint256 poolId = getPoolId(key);
         // Forward full typed parameters to hook commands: sender, key, sqrtPriceX96
         runHooks_BeforeInitialize(poolId, hookPath, sender, key, sqrtPriceX96);
+        console.log("sender MC _beforeInitialize", sender);
         return this.beforeInitialize.selector;
     }
  
@@ -359,34 +360,6 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         return this.afterDonate.selector;
     }
 
-    // --- Universal Hook Runner ---
-
-    // Passes a value (as bytes) through each command, updating it with each command's return value
-    function runHooksWithValue(uint256 poolId, bytes32 hookPath, bytes memory context, bytes memory initialValue) internal returns (bytes memory) {
-                Command[] storage cmds = poolCommands[poolId][hookPath];
-        bytes memory value = initialValue;
-                                for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            bytes memory ret;
-            if (cmds[i].callType == CallType.Delegate) {
-                // Log context length and first 10 bytes
-                            bytes memory first10 = new bytes(context.length < 10 ? context.length : 10);
-                for (uint j = 0; j < first10.length; j++) {
-                    first10[j] = context[j];
-                }
-                            for (uint j = 0; j < first10.length; j++) {
-                                }
-                // Delegate case: append the current 'value' after the context so targets receiving both context and value can decode them
-                (success, ret) = cmds[i].target.delegatecall(abi.encodeWithSelector(cmds[i].selector, context, value));
-            } else {
-                // External call: pack selector + context + current value
-                (success, ret) = cmds[i].target.call(abi.encodeWithSelector(cmds[i].selector, context, value));
-            }
-            require(success, "Hook command failed");
-            value = ret;
-        }
-                        return value;
-    }
 
     // --- Typed hook runners ---
     // Each runner passes structured ABI parameters (typed) to commands and appends the command's configured bytes as a trailing `bytes` param.
@@ -595,16 +568,14 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     }
 
     // Batch run of Command[] for setup (owner-only utility)
-    // This function is now owner-restricted to prevent arbitrary delegatecalls from non-trusted callers.
-    // It still invokes commands using the typed-caller convention: abi.encodeWithSelector(selector, <typed params...>, bytes extra)
+    // Owner-only: execute target commands. For backward compatibility with legacy command
+    // implementations that expect a trailing `bytes` parameter, commands will be invoked with a
+    // single empty `bytes` parameter.
     function runCommandBatch(Command[] calldata commands) external {
         require(msg.sender == owner, "MasterControl: only owner");
+        bytes memory emptyBytes = "";
         for (uint i = 0; i < commands.length; i++) {
             bool success;
-            // For compatibility with legacy command implementations that expect a trailing bytes param,
-            // provide an empty bytes value by default. This keeps owner-run batches usable without
-            // relying on per-command runtime `data`.
-            bytes memory emptyBytes = "";
             if (commands[i].callType == CallType.Delegate) {
                 (success, ) = commands[i].target.delegatecall(
                     abi.encodeWithSelector(commands[i].selector, emptyBytes)
@@ -619,32 +590,6 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         }
     }
     
-    // Pool-scoped batch runner deprecated for security reasons.
-    // Pool admins should use the explicit setPoolConfigValue API to modify MemoryCard-backed configuration.
-    function runCommandBatchForPool(uint256 /*poolId*/, Command[] calldata /*commands*/) external {
-        revert("MasterControl: runCommandBatchForPool deprecated; use setPoolConfigValue");
-    }
-function runHooks(uint256 poolId, bytes32 hookPath, bytes memory context) internal {
-    Command[] storage cmds = poolCommands[poolId][hookPath];
-    for (uint i = 0; i < cmds.length; i++) {
-        bool success;
-        if (cmds[i].callType == CallType.Delegate) {
-            (success, ) = cmds[i].target.delegatecall(
-                abi.encodeWithSelector(cmds[i].selector, context)
-            );
-            require(success, "Delegatecall failed");
-        } else if (cmds[i].callType == CallType.Call) {
-            (success, ) = cmds[i].target.call(
-                abi.encodeWithSelector(cmds[i].selector, context)
-            );
-            require(success, "Call failed");
-        }
-    
-    
-        
-    }
-    }
-
     // --- User Command Management ---
 
     

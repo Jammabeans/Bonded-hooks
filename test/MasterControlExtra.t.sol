@@ -117,13 +117,8 @@ contract MasterControlExtraTest is Test, Deployers {
         // non-admin (address(1)) should not be able to apply blocks
         vm.prank(address(1));
         vm.expectRevert(bytes("MasterControl: not pool admin"));
-        master.applyBlocksToPool(pidUint, blockIds);
- 
-        // runCommandBatchForPool is deprecated and now always reverts with a deprecation message.
-        vm.prank(address(1));
-        vm.expectRevert(bytes("MasterControl: runCommandBatchForPool deprecated; use setPoolConfigValue"));
-        master.runCommandBatchForPool(pidUint, cmds);
- 
+        master.applyBlocksToPool(pidUint, blockIds); 
+         
         // admin (this test) should be able to apply blocks
         vm.prank(address(launchpad));
         access.setPoolAdmin(pidUint, address(this));

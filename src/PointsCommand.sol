@@ -110,44 +110,7 @@ contract PointsCommand {
         (bool success, ) = address(this).call(abi.encodeWithSelector(selector, to, id, amount));
         require(success, "Delegatecall to _mint failed");
     }
-
-
-    // Helper for try/catch decoding
-
-    // --- Stateless admin "setters"/"getters" (callable via dispatcher with encoded input) ---
-
-    // Deprecated setters: pool admins should use MasterControl.setPoolConfigValue instead.
-    // These external functions are intentionally disabled to prevent arbitrary external writes
-    // through PointsCommand. They remain present to preserve selectors for historical approvals.
-    function setBonusThreshold(bytes calldata) external {
-        revert("PointsCommand: deprecated; use MasterControl.setPoolConfigValue");
-    }
     
-    function setBonusPercent(bytes calldata) external {
-        revert("PointsCommand: deprecated; use MasterControl.setPoolConfigValue");
-    }
-    
-    function setBasePointsPercent(bytes calldata) external {
-        revert("PointsCommand: deprecated; use MasterControl.setPoolConfigValue");
-    }
-
-    // This function will resolve to MasterControl's mintPoints via delegatecall
-    function mintPoints(address to, uint256 id, uint256 amount) internal {
-        // The actual implementation is in MasterControl
-        // This is just a placeholder for the selector
-        // The call will be handled by delegatecall context
-        // (no-op here)
-    }
- 
-    /// @notice Read per-pool config from MemoryCard (threshold, bonusPercent, basePointsPercent)
-    function _readPoolConfig(IMemoryCard mc, uint256 poolId) internal view returns (uint256 threshold, uint256 bonusPercent, uint256 basePointsPercent) {
-        bytes32 thresholdKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolId));
-        bytes32 bonusKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolId));
-        bytes32 basePointsKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolId));
-        threshold = toUint256(mc.read(address(this), thresholdKey));
-        bonusPercent = toUint256(mc.read(address(this), bonusKey));
-        basePointsPercent = toUint256(mc.read(address(this), basePointsKey));
-    }
 
     /// @notice Helper to compute points for a given ETH spend using configured percents and threshold.
     /// This function reads per-pool config from MemoryCard to avoid stacking many locals in afterSwap.
@@ -174,7 +137,7 @@ contract PointsCommand {
     /// callType: 0 = Delegate, 1 = Call
     function commandMetadata() external view returns (address target, bytes4 selector, uint8 callType) {
         target = address(this);
-        selector = bytes4(keccak256("afterSwap(address,PoolKey,SwapParams,BalanceDelta,bytes)"));
+        selector = this.afterSwap.selector;
         callType = 0; // Delegate
     }
  

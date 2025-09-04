@@ -66,6 +66,7 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
 
         // Deploy PoolLaunchPad and configure AccessControl
         launchpad = new PoolLaunchPad(manager, accessControl);
+        console.log("launchpad", address(launchpad));
         accessControl.setPoolLaunchPad(address(launchpad));
 
         // Deploy PointsCommand
