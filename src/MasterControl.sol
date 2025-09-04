@@ -5,6 +5,7 @@ import {ERC1155} from "solmate/src/tokens/ERC1155.sol";
 // --- Uniswap V4 Periphery Imports ---
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
+import {PoolId} from "v4-core/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
 import {SwapParams, ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol";
@@ -12,6 +13,7 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {console} from "forge-std/console.sol";
 import {AccessControl} from "./AccessControl.sol";
+import {MemoryCard} from "./MemoryCard.sol";
 
 // --- Hook Interface for Dispatch ---
 interface IHook {
@@ -39,7 +41,6 @@ contract MasterControl is BaseHook, ERC1155 {
         bytes32 hookPath;
         address target;
         bytes4 selector;
-        bytes data; // optional extra data
         CallType callType;
     }
 
@@ -52,8 +53,8 @@ contract MasterControl is BaseHook, ERC1155 {
     // MasterControl admin (contract-level)
     address public owner;
  
-    // Approved commands registry per hookPath: hookPath => target => selector => enabled
-    mapping(bytes32 => mapping(address => mapping(bytes4 => bool))) public commandEnabled;
+    // Approved commands registry per hookPath: hookPath => target => approved (selectors validated at block/apply time)
+    mapping(bytes32 => mapping(address => bool)) public commandEnabled;
 
     // --- Whitelisted command blocks (owner-managed, ALL_REQUIRED semantics) ---
     // blockId => array of commands (the whitelisted command list for this block)
@@ -64,9 +65,6 @@ contract MasterControl is BaseHook, ERC1155 {
     mapping(uint256 => uint64) public blockExpiresAt;
     // Maximum number of commands permitted in a single block to guard against gas exhaustion
     uint256 constant MAX_COMMANDS_PER_BLOCK = 64;
-    // Marker byte used in a Command.data payload to indicate the command should become immutable
-    // once applied to a pool. Owner may place this marker as the first byte of the `data` field.
-    bytes1 constant IMMUTABLE_DATA_FLAG = 0x01;
     // Per-block/per-command immutability marker (blockId => commandIndex => immutable)
     mapping(uint256 => mapping(uint256 => bool)) internal blockCommandImmutable;
     // Per-pool lock registry: poolId => hookPath => target => selector => locked (immutable for that pool)
@@ -86,28 +84,33 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     event BlockCreated(uint256 indexed blockId, bytes32 indexed hookPath, bytes32 commandsHash);
     event BlockRevoked(uint256 indexed blockId);
     event BlockApplied(uint256 indexed blockId, uint256 indexed poolId, bytes32 indexed hookPath);
-
+    
     event CommandsSet(uint256 indexed poolId, bytes32 indexed hookPath, bytes32 commandsHash);
     
-    event CommandApproved(bytes32 indexed hookPath, address indexed target, bytes4 selector, string name);
-    event CommandToggled(bytes32 indexed hookPath, address indexed target, bytes4 selector, bool enabled);
+    event CommandApproved(bytes32 indexed hookPath, address indexed target, string name);
+    event CommandToggled(bytes32 indexed hookPath, address indexed target, bool enabled);
+    event MemoryCardDeployed(address indexed memoryCard);
 
-    /// @notice Approve a command (target + selector) for a hookPath. Owner-only.
-    function approveCommand(bytes32 hookPath, address target, bytes4 selector, string memory name) external {
+    /// @notice Approve a command target for a hookPath. Owner-only.
+    function approveCommand(bytes32 hookPath, address target, string memory name) external {
         require(msg.sender == owner, "MasterControl: only owner");
-        commandEnabled[hookPath][target][selector] = true;
-        emit CommandApproved(hookPath, target, selector, name);
+        commandEnabled[hookPath][target] = true;
+        emit CommandApproved(hookPath, target, name);
     }
-
-    /// @notice Toggle approval for a command for a hookPath. Owner-only.
-    function setCommandEnabled(bytes32 hookPath, address target, bytes4 selector, bool enabled) external {
+    
+    /// @notice Toggle approval for a command target for a hookPath. Owner-only.
+    function setCommandEnabled(bytes32 hookPath, address target, bool enabled) external {
         require(msg.sender == owner, "MasterControl: only owner");
-        commandEnabled[hookPath][target][selector] = enabled;
-        emit CommandToggled(hookPath, target, selector, enabled);
+        commandEnabled[hookPath][target] = enabled;
+        emit CommandToggled(hookPath, target, enabled);
     }
 
     constructor(IPoolManager _manager) BaseHook(_manager) {
         owner = msg.sender;
+        // Deploy a MemoryCard by default and set it (owner may override later)
+        MemoryCard mc = new MemoryCard();
+        memoryCard = address(mc);
+        emit MemoryCardDeployed(memoryCard);
     }
     
     
@@ -367,17 +370,17 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bytes memory ret;
             if (cmds[i].callType == CallType.Delegate) {
                 // Log context length and first 10 bytes
-                                bytes memory first10 = new bytes(context.length < 10 ? context.length : 10);
+                            bytes memory first10 = new bytes(context.length < 10 ? context.length : 10);
                 for (uint j = 0; j < first10.length; j++) {
                     first10[j] = context[j];
                 }
-                                for (uint j = 0; j < first10.length; j++) {
-                                    }
+                            for (uint j = 0; j < first10.length; j++) {
+                                }
                 // Delegate case: append the current 'value' after the context so targets receiving both context and value can decode them
-                (success, ret) = cmds[i].target.delegatecall(abi.encodeWithSelector(cmds[i].selector, context, value, cmds[i].data));
+                (success, ret) = cmds[i].target.delegatecall(abi.encodeWithSelector(cmds[i].selector, context, value));
             } else {
-                // External call: pack selector + context + current value + extra data
-                (success, ret) = cmds[i].target.call(abi.encodeWithSelector(cmds[i].selector, context, value, cmds[i].data));
+                // External call: pack selector + context + current value
+                (success, ret) = cmds[i].target.call(abi.encodeWithSelector(cmds[i].selector, context, value));
             }
             require(success, "Hook command failed");
             value = ret;
@@ -395,12 +398,12 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bool success;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96)
                 );
                 require(success, "Delegatecall failed");
             } else {
                 (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96)
                 );
                 require(success, "Call failed");
             }
@@ -413,12 +416,12 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bool success;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, tick, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, tick)
                 );
                 require(success, "Delegatecall failed");
             } else {
                 (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, tick, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, tick)
                 );
                 require(success, "Call failed");
             }
@@ -431,12 +434,12 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bool success;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
                 );
                 require(success, "Delegatecall failed");
             } else {
                 (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
                 );
                 require(success, "Call failed");
             }
@@ -451,11 +454,11 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bytes memory ret;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ret) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData)
                 );
             } else {
                 (success, ret) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData)
                 );
             }
             require(success, "Hook command failed");
@@ -471,12 +474,12 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bool success;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
                 );
                 require(success, "Delegatecall failed");
             } else {
                 (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
                 );
                 require(success, "Call failed");
             }
@@ -491,11 +494,11 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bytes memory ret;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ret) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData)
                 );
             } else {
                 (success, ret) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData)
                 );
             }
             require(success, "Hook command failed");
@@ -513,11 +516,11 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bytes memory ret;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ret) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
                 );
             } else {
                 (success, ret) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
                 );
             }
             require(success, "Hook command failed");
@@ -540,11 +543,11 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bytes memory ret;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ret) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, delta, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, delta, hookData)
                 );
             } else {
                 (success, ret) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, delta, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, delta, hookData)
                 );
             }
             require(success, "Hook command failed");
@@ -561,12 +564,12 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bool success;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData)
                 );
                 require(success, "Delegatecall failed");
             } else {
                 (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData)
                 );
                 require(success, "Call failed");
             }
@@ -579,12 +582,12 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
             bool success;
             if (cmds[i].callType == CallType.Delegate) {
                 (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData)
                 );
                 require(success, "Delegatecall failed");
             } else {
                 (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData, cmds[i].data)
+                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData)
                 );
                 require(success, "Call failed");
             }
@@ -598,15 +601,18 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         require(msg.sender == owner, "MasterControl: only owner");
         for (uint i = 0; i < commands.length; i++) {
             bool success;
-            // Each Command.data is treated as the trailing `bytes extra` parameter for typed functions
+            // For compatibility with legacy command implementations that expect a trailing bytes param,
+            // provide an empty bytes value by default. This keeps owner-run batches usable without
+            // relying on per-command runtime `data`.
+            bytes memory emptyBytes = "";
             if (commands[i].callType == CallType.Delegate) {
                 (success, ) = commands[i].target.delegatecall(
-                    abi.encodeWithSelector(commands[i].selector, commands[i].data)
+                    abi.encodeWithSelector(commands[i].selector, emptyBytes)
                 );
                 require(success, "Delegatecall failed");
             } else if (commands[i].callType == CallType.Call) {
                 (success, ) = commands[i].target.call(
-                    abi.encodeWithSelector(commands[i].selector, commands[i].data)
+                    abi.encodeWithSelector(commands[i].selector, emptyBytes)
                 );
                 require(success, "Call failed");
             }
@@ -618,25 +624,25 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     function runCommandBatchForPool(uint256 /*poolId*/, Command[] calldata /*commands*/) external {
         revert("MasterControl: runCommandBatchForPool deprecated; use setPoolConfigValue");
     }
-
-    function runHooks(uint256 poolId, bytes32 hookPath, bytes memory context) internal {
-        Command[] storage cmds = poolCommands[poolId][hookPath];
-        for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, context, cmds[i].data)
-                );
-                require(success, "Delegatecall failed");
-            } else if (cmds[i].callType == CallType.Call) {
-                (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, context, cmds[i].data)
-                );
-                require(success, "Call failed");
-            }
-        
-            
+function runHooks(uint256 poolId, bytes32 hookPath, bytes memory context) internal {
+    Command[] storage cmds = poolCommands[poolId][hookPath];
+    for (uint i = 0; i < cmds.length; i++) {
+        bool success;
+        if (cmds[i].callType == CallType.Delegate) {
+            (success, ) = cmds[i].target.delegatecall(
+                abi.encodeWithSelector(cmds[i].selector, context)
+            );
+            require(success, "Delegatecall failed");
+        } else if (cmds[i].callType == CallType.Call) {
+            (success, ) = cmds[i].target.call(
+                abi.encodeWithSelector(cmds[i].selector, context)
+            );
+            require(success, "Call failed");
         }
+    
+    
+        
+    }
     }
 
     // --- User Command Management ---
@@ -710,30 +716,29 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
 
     /// @notice Owner creates a whitelisted block of commands.
     /// blockId is an arbitrary numeric id chosen by owner; each Command must include its hookPath.
-    function createBlock(uint256 blockId, Command[] calldata commands, uint64 expiresAt) external {
+    function createBlock(uint256 blockId, Command[] calldata commands, bool[] calldata immutableFlags, uint64 expiresAt) external {
         require(msg.sender == owner, "MasterControl: only owner");
         require(!blockEnabled[blockId], "MasterControl: block exists");
         require(commands.length > 0, "MasterControl: empty block");
         require(commands.length <= MAX_COMMANDS_PER_BLOCK, "MasterControl: too many commands");
+        require(immutableFlags.length == commands.length, "MasterControl: immutableFlags length mismatch");
  
-        // validate that each command is approved for its declared hookPath and push into storage
+        // validate that each command's target is approved for its declared hookPath and push into storage
         for (uint i = 0; i < commands.length; i++) {
             bytes32 cmdHook = commands[i].hookPath;
             require(cmdHook != bytes32(0), "MasterControl: command hookPath zero");
-            require(commandEnabled[cmdHook][commands[i].target][commands[i].selector], "MasterControl: command not approved for block");
+            require(commandEnabled[cmdHook][commands[i].target], "MasterControl: command target not approved for hook");
             // push a copy into storage (preserve hookPath)
             blockCommands[blockId].push(
                 Command({
                     hookPath: cmdHook,
                     target: commands[i].target,
                     selector: commands[i].selector,
-                    data: commands[i].data,
                     callType: commands[i].callType
                 })
             );
-            // If the owner encoded the immutability marker as the first byte of the Command.data,
-            // mark this command index in the block as immutable when applied to a pool.
-            if (commands[i].data.length > 0 && commands[i].data[0] == IMMUTABLE_DATA_FLAG) {
+            // Use explicit immutableFlags array to mark immutability per-index
+            if (immutableFlags[i]) {
                 blockCommandImmutable[blockId][i] = true;
             }
         }
@@ -741,7 +746,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         blockEnabled[blockId] = true;
         blockExpiresAt[blockId] = expiresAt;
  
-        // commandsHash uses targets/selectors/data/hookPath
+        // commandsHash uses targets/selectors/hookPath (no per-command data anymore)
         bytes32 commandsHash = keccak256(abi.encode(commands));
         // emit BlockCreated with a representative hookPath (hash of commands)
         bytes32 representativeHook = keccak256(abi.encode(commands));
@@ -797,7 +802,7 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
             for (uint j = 0; j < cmds.length; j++) {
                 bytes32 cmdHook = cmds[j].hookPath;
                 require(cmdHook != bytes32(0), "MasterControl: block command hookPath zero");
-                require(commandEnabled[cmdHook][cmds[j].target][cmds[j].selector], "MasterControl: block contains unapproved command");
+                require(commandEnabled[cmdHook][cmds[j].target], "MasterControl: block contains unapproved command target");
                 totalCommands++;
                 require(totalCommands <= MAX_APPLY_COMMANDS, "MasterControl: too many commands in apply");
             }
@@ -850,9 +855,12 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
         return keccak256(abi.encode(key));
     }
 
-    // Utility: Derive poolId from PoolKey
+    // Utility: Derive poolId from PoolKey using canonical PoolId API
     function getPoolId(PoolKey calldata key) internal pure returns (uint256) {
-        return uint256(keccak256(abi.encode(key)));
+        // copy calldata struct into memory so we can call the memory-based toId helper
+        PoolKey memory mk = key;
+        PoolId id = mk.toId();
+        return uint256(PoolId.unwrap(id));
     }
 
     

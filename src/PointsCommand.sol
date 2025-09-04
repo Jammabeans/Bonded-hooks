@@ -6,10 +6,23 @@ import {PoolId} from "v4-core/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {SwapParams} from "v4-core/types/PoolOperation.sol";
 //import {IMemoryCard} from "./IMemoryCard.sol";
+import "forge-std/console.sol";
 
 interface IMemoryCard {
     function read(address user, bytes32 key) external view returns (bytes memory);
     function write(bytes32 key, bytes calldata value) external;
+}
+
+// Minimal MasterControl read interface used by commands at delegatecall-time
+interface IMasterControl {
+    function memoryCard() external view returns (address);
+}
+
+// Optional helper interface: some routers/wrappers expose a msgSender() helper to reveal the user
+// that triggered a proxied call. We will try to call this on the `sender` address and skip minting
+// if the call reverts or returns address(0).
+interface IMsgSender {
+    function msgSender() external view returns (address);
 }
 
 
@@ -30,8 +43,6 @@ contract PointsCommand {
     // --- Entry point for dispatcher via delegatecall ---
     // context must include memoryCard address, pointsToken address, config keys as needed
     struct AfterSwapInput {
-        address memoryCardAddr;
-        address pointsTokenAddr;
         uint256 poolId; // canonical numeric PoolId
         address user; // trade recipient
         int256 amount0;
@@ -40,60 +51,53 @@ contract PointsCommand {
     }
 
     // Typed entrypoint for dispatcher (MasterControl will call this via delegatecall).
-    // Signature: afterSwap(address sender, PoolKey calldata key, SwapParams calldata params, BalanceDelta delta, bytes calldata hookData, bytes calldata extra)
+    // Signature: afterSwap(address sender, PoolKey calldata key, SwapParams calldata params, BalanceDelta delta, bytes calldata hookData)
     // Returns an int128 (optional), encoded by the callee. Commands that do not need to return a value can return 0.
     function afterSwap(
         address sender,
         PoolKey calldata key,
-        SwapParams calldata params,
+        SwapParams calldata /*params*/,
         BalanceDelta delta,
-        bytes calldata hookData,
-        bytes calldata extra
+        bytes calldata /*hookData*/
     ) external returns (int128) {
 
-        // Require hookData to be present for this command's operation (MasterControl/test provides it).
-        require(hookData.length > 0, "PointsCommand.afterSwap: missing hookData");
+        // Obtain MemoryCard address from MasterControl (delegatecall context => address(this) == MasterControl)
+        address mcAddr = IMasterControl(address(this)).memoryCard();
+        require(mcAddr != address(0), "PointsCommand: memoryCard not set");
+        IMemoryCard mc = IMemoryCard(mcAddr);
 
-        // Decode authoritative AfterSwapInput from hookData. If malformed, revert.
-        AfterSwapInput memory input = abi.decode(hookData, (AfterSwapInput));
+        // Derive canonical poolId from the PoolKey (copy calldata to memory to call toId())
+        PoolKey memory mk = key;
+        PoolId pid = mk.toId();
+        uint256 poolId = uint256(PoolId.unwrap(pid));
 
-        // Use memoryCard address from the decoded input (delegatecall context => address(this) == MasterControl)
-        IMemoryCard mc = IMemoryCard(input.memoryCardAddr);
+
+        // Compute ETH spent from the BalanceDelta (negative amount0 indicates ETH spent)
+        if (delta.amount0() >= 0) {
+            return int128(0);
+        }
+        uint256 ethSpendAmount = uint256(int256(-delta.amount0()));
  
-        // Use the provided canonical poolId (numeric) so settings are per-pool
-        uint256 poolId = input.poolId;
-        bytes32 thresholdKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolId));
-        bytes32 bonusKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolId));
-        bytes32 basePointsKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolId));
- 
-        // Read per-pool config from MemoryCard under this contract's caller slot (delegatecall context => address(this) == MasterControl)
-        uint256 threshold = toUint256(mc.read(address(this), thresholdKey));
-        uint256 bonusPercent = toUint256(mc.read(address(this), bonusKey));
-        uint256 basePointsPercent = toUint256(mc.read(address(this), basePointsKey));
+        // Compute points using helper to reduce stack usage
+        uint256 pointsForSwap = _computePointsForSwap(mc, poolId, ethSpendAmount);
 
-        // Use explicit amount from the decoded input (authoritative)
-        int256 amount0 = input.amount0;
-
-        // Only run for buys (negative amount0 indicates ETH spent)
-        if (amount0 >= 0) {
+        // Try to resolve the recipient using IMsgSender on the `sender` address.
+        // If it reverts or returns address(0), skip minting for this call.
+        address recipient = address(0);
+        
+        try IMsgSender(sender).msgSender() returns (address r) {
+            recipient = r;
+        } catch {
             return int128(0);
         }
 
-        uint256 ethSpendAmount = uint256(-amount0);
-        uint256 pointsForSwap = (ethSpendAmount * basePointsPercent) / 100;
+        if (recipient == address(0)) return int128(0);
 
-        if (ethSpendAmount >= threshold && bonusPercent > 0) {
-            uint256 bonusPoints = (pointsForSwap * bonusPercent) / 100;
-            pointsForSwap += bonusPoints;
-        }
-
-        // Determine poolId to use as token id — prefer the explicit input.poolId
-        uint256 tokenId = input.poolId;
+        
 
         if (pointsForSwap > 0) {
             // Mint points via MasterControl's mintPoints (will be called from delegatecall context)
-            _mintDelegate(input.user, tokenId, pointsForSwap);
-        } else {
+            _mintDelegate(recipient, poolId, pointsForSwap);
         }
 
         // No meaningful int128 to return; return 0 for compatibility
@@ -134,7 +138,46 @@ contract PointsCommand {
         // The call will be handled by delegatecall context
         // (no-op here)
     }
+ 
+    /// @notice Read per-pool config from MemoryCard (threshold, bonusPercent, basePointsPercent)
+    function _readPoolConfig(IMemoryCard mc, uint256 poolId) internal view returns (uint256 threshold, uint256 bonusPercent, uint256 basePointsPercent) {
+        bytes32 thresholdKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolId));
+        bytes32 bonusKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolId));
+        bytes32 basePointsKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolId));
+        threshold = toUint256(mc.read(address(this), thresholdKey));
+        bonusPercent = toUint256(mc.read(address(this), bonusKey));
+        basePointsPercent = toUint256(mc.read(address(this), basePointsKey));
+    }
 
+    /// @notice Helper to compute points for a given ETH spend using configured percents and threshold.
+    /// This function reads per-pool config from MemoryCard to avoid stacking many locals in afterSwap.
+    function _computePointsForSwap(IMemoryCard mc, uint256 poolId, uint256 ethSpendAmount) internal view returns (uint256) {
+        if (ethSpendAmount == 0) return 0;
+        bytes32 thresholdKey = keccak256(abi.encode(KEY_BONUS_THRESHOLD, poolId));
+        bytes32 bonusKey = keccak256(abi.encode(KEY_BONUS_PERCENT, poolId));
+        bytes32 basePointsKey = keccak256(abi.encode(KEY_BASE_POINTS_PERCENT, poolId));
+        uint256 threshold = toUint256(mc.read(address(this), thresholdKey));
+        uint256 bonusPercent = toUint256(mc.read(address(this), bonusKey));
+        uint256 basePointsPercent = toUint256(mc.read(address(this), basePointsKey));
+        if (basePointsPercent == 0) return 0;
+        uint256 points = (ethSpendAmount * basePointsPercent) / 100;
+        if (ethSpendAmount >= threshold && bonusPercent > 0) {
+            uint256 bonus = (points * bonusPercent) / 100;
+            points += bonus;
+        }
+        return points;
+    }
+
+    /// @notice Returns minimal metadata needed by owner to approve this command
+    /// target: contract address to call (this contract)
+    /// selector: function selector for the hook entrypoint
+    /// callType: 0 = Delegate, 1 = Call
+    function commandMetadata() external view returns (address target, bytes4 selector, uint8 callType) {
+        target = address(this);
+        selector = bytes4(keccak256("afterSwap(address,PoolKey,SwapParams,BalanceDelta,bytes)"));
+        callType = 0; // Delegate
+    }
+ 
     function toUint256(bytes memory value) internal pure returns (uint256 v) {
         if (value.length < 32) return 0;
         assembly { v := mload(add(value, 0x20)) }

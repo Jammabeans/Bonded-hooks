@@ -125,13 +125,13 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
     function _approvePointCommands(bytes32 hookPath) internal {
         address owner = masterControl.owner();
         vm.prank(owner);
-        masterControl.approveCommand(hookPath, address(pointsCommand), pointsCommand.afterSwap.selector, "afterSwap");
+        masterControl.approveCommand(hookPath, address(pointsCommand), "afterSwap");
         vm.prank(owner);
-        masterControl.approveCommand(hookPath, address(pointsCommand), pointsCommand.setBonusThreshold.selector, "setBonusThreshold");
+        masterControl.approveCommand(hookPath, address(pointsCommand), "setBonusThreshold");
         vm.prank(owner);
-        masterControl.approveCommand(hookPath, address(pointsCommand), pointsCommand.setBonusPercent.selector, "setBonusPercent");
+        masterControl.approveCommand(hookPath, address(pointsCommand), "setBonusPercent");
         vm.prank(owner);
-        masterControl.approveCommand(hookPath, address(pointsCommand), pointsCommand.setBasePointsPercent.selector, "setBasePointsPercent");
+        masterControl.approveCommand(hookPath, address(pointsCommand), "setBasePointsPercent");
     }
 
     // Helper: create a whitelisted block as owner and apply it to the pool as the given admin
@@ -140,11 +140,12 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         // Approve each command as owner (use each command's declared hookPath)
         for (uint i = 0; i < cmds.length; i++) {
             vm.prank(mcOwner);
-            masterControl.approveCommand(cmds[i].hookPath, cmds[i].target, cmds[i].selector, "auto");
+            masterControl.approveCommand(cmds[i].hookPath, cmds[i].target, "auto");
         }
         // Owner creates the whitelisted block
         vm.prank(mcOwner);
-        masterControl.createBlock(blockId, cmds, 0);
+        bool[] memory flags = new bool[](cmds.length);
+        masterControl.createBlock(blockId, cmds, flags, 0);
         // Admin applies the block to the pool
         uint256[] memory blockIds = new uint256[](1);
         blockIds[0] = blockId;
@@ -159,7 +160,6 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
             hookPath: hookPath,
             target: address(pointsCommand),
             selector: pointsCommand.afterSwap.selector,
-            data: "", // input will be provided as hookData at swap time
             callType: MasterControl.CallType.Delegate
         });
  
@@ -167,7 +167,8 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         uint256 blockId = 1;
         address mcOwner = masterControl.owner();
         vm.prank(mcOwner);
-        masterControl.createBlock(blockId, commands, 0);
+        bool[] memory flags = new bool[](commands.length);
+        masterControl.createBlock(blockId, commands, flags, 0);
  
         // Set poolCreator and ensure it is recognized as pool admin for the test
         poolCreator = address(2);
@@ -207,8 +208,6 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
 
     function _performSwapAndReturnPoints(int256 amount0) internal returns (uint256) {
         PointsCommand.AfterSwapInput memory afterSwapInput = PointsCommand.AfterSwapInput({
-            memoryCardAddr: address(memoryCard),
-            pointsTokenAddr: address(masterControl),
             poolId: poolIdUint,
             user: address(this),
             amount0: amount0,
@@ -273,6 +272,9 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
     /* ========== Tests ========== */
 
     function test_swap_mints_points() public {
+        console.log("address(this)", address(this));
+        console.log("poolCreator", poolCreator);
+        console.log("swapRouter", address(swapRouter));
         // Swap 0.001 ETH for tokens, expect points minted according to configured percentages
         uint256 minted = _performSwapAndReturnPoints(-0.001 ether);
         // Basic sanity: some points should be minted
@@ -287,13 +289,13 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
             hookPath: hookPath,
             target: address(bytes20(hex"DEAD00000000000000000000000000000000BEEF")),
             selector: bytes4(0x12345678),
-            data: "",
             callType: MasterControl.CallType.Delegate
         });
  
         address mcOwner = masterControl.owner();
         vm.prank(mcOwner);
-        vm.expectRevert(bytes("MasterControl: command not approved for block"));
-        masterControl.createBlock(999, badCommands, 0);
+        vm.expectRevert(bytes("MasterControl: command target not approved for hook"));
+        bool[] memory badFlags = new bool[](badCommands.length);
+        masterControl.createBlock(999, badCommands, badFlags, 0);
     }
 }

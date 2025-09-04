@@ -55,15 +55,16 @@ contract BlockProvenanceTest is Test, Deployers {
 
         // owner approves command
         vm.prank(owner);
-        master.approveCommand(hookPath, address(t), sel, "noop");
+        master.approveCommand(hookPath, address(t), "noop");
 
         // create a block with one command
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
-        cmds[0] = MasterControl.Command({hookPath: hookPath, target: address(t), selector: sel, data: "", callType: MasterControl.CallType.Delegate});
-
+        cmds[0] = MasterControl.Command({hookPath: hookPath, target: address(t), selector: sel, callType: MasterControl.CallType.Delegate});
+ 
         uint256 blockId = 100;
         vm.prank(owner);
-        master.createBlock(blockId, cmds, 0);
+        bool[] memory blkFlags = new bool[](cmds.length);
+        master.createBlock(blockId, cmds, blkFlags, 0);
 
         // mark block immutable and set conflict group
         vm.prank(owner);
@@ -91,7 +92,10 @@ contract BlockProvenanceTest is Test, Deployers {
         // Now create another block with same conflict group and try apply -> should revert
         uint256 block2 = 101;
         vm.prank(owner);
-        master.createBlock(block2, cmds, 0);
+        {
+            bool[] memory flags2 = new bool[](cmds.length);
+            master.createBlock(block2, cmds, flags2, 0);
+        }
         vm.prank(owner);
         master.setBlockMetadata(block2, false, bytes32("grp1"));
 
@@ -118,32 +122,32 @@ contract BlockProvenanceTest is Test, Deployers {
 
         // owner approves command for both hook paths
         vm.prank(owner);
-        master.approveCommand(hookA, address(t), sel, "noopA");
+        master.approveCommand(hookA, address(t), "noopA");
         vm.prank(owner);
-        master.approveCommand(hookB, address(t), sel, "noopB");
+        master.approveCommand(hookB, address(t), "noopB");
 
         // create a block with two commands:
-        // - cmd0: hookA, immutable flag set via data's first byte
-        // - cmd1: hookB, mutable (empty data)
+        // - cmd0: hookA, immutable via explicit flag
+        // - cmd1: hookB, mutable
         MasterControl.Command[] memory cmds = new MasterControl.Command[](2);
         cmds[0] = MasterControl.Command({
             hookPath: hookA,
             target: address(t),
             selector: sel,
-            data: abi.encodePacked(bytes1(0x01)), // IMMUTABLE_DATA_FLAG
             callType: MasterControl.CallType.Delegate
         });
         cmds[1] = MasterControl.Command({
             hookPath: hookB,
             target: address(t),
             selector: sel,
-            data: "",
             callType: MasterControl.CallType.Delegate
         });
-
+ 
         uint256 blockId = 200;
         vm.prank(owner);
-        master.createBlock(blockId, cmds, 0);
+        bool[] memory flags = new bool[](2);
+        flags[0] = true; // first command immutable
+        master.createBlock(blockId, cmds, flags, 0);
 
         // apply block to pool
         uint256[] memory ids = new uint256[](1);
@@ -180,16 +184,18 @@ contract BlockProvenanceTest is Test, Deployers {
 
         // owner approves command
         vm.prank(owner);
-        master.approveCommand(hookPath, address(t), sel, "noop");
-
+        master.approveCommand(hookPath, address(t), "noop");
+ 
         // create a block and mark immutable
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
-        cmds[0] = MasterControl.Command({hookPath: hookPath, target: address(t), selector: sel, data: abi.encodePacked(bytes1(0x01)), callType: MasterControl.CallType.Delegate});
-
+        cmds[0] = MasterControl.Command({hookPath: hookPath, target: address(t), selector: sel, callType: MasterControl.CallType.Delegate});
+ 
         uint256 blockId = 300;
         vm.prank(owner);
-        master.createBlock(blockId, cmds, 0);
-
+        bool[] memory flags1 = new bool[](1);
+        flags1[0] = true;
+        master.createBlock(blockId, cmds, flags1, 0);
+ 
         vm.prank(owner);
         master.setBlockMetadata(blockId, true, bytes32(0));
 
@@ -241,22 +247,24 @@ contract BlockProvenanceTest is Test, Deployers {
         bytes32 hp = keccak256("hookConflict");
         bytes4 sel = MockTarget.doNothing.selector;
         vm.prank(owner);
-        master.approveCommand(hp, address(t1), sel, "t1");
+        master.approveCommand(hp, address(t1), "t1");
         vm.prank(owner);
-        master.approveCommand(hp, address(t2), sel, "t2");
+        master.approveCommand(hp, address(t2), "t2");
 
         // Build two distinct blocks representing alternative implementations, same conflict group "alt"
         MasterControl.Command[] memory cmdsA = new MasterControl.Command[](1);
-        cmdsA[0] = MasterControl.Command({hookPath: hp, target: address(t1), selector: sel, data: "", callType: MasterControl.CallType.Delegate});
+        cmdsA[0] = MasterControl.Command({hookPath: hp, target: address(t1), selector: sel, callType: MasterControl.CallType.Delegate});
         MasterControl.Command[] memory cmdsB = new MasterControl.Command[](1);
-        cmdsB[0] = MasterControl.Command({hookPath: hp, target: address(t2), selector: sel, data: "", callType: MasterControl.CallType.Delegate});
+        cmdsB[0] = MasterControl.Command({hookPath: hp, target: address(t2), selector: sel, callType: MasterControl.CallType.Delegate});
 
         uint256 a = 400;
         uint256 b = 401;
         vm.prank(owner);
-        master.createBlock(a, cmdsA, 0);
+        bool[] memory fa = new bool[](cmdsA.length);
+        master.createBlock(a, cmdsA, fa, 0);
         vm.prank(owner);
-        master.createBlock(b, cmdsB, 0);
+        bool[] memory fb = new bool[](cmdsB.length);
+        master.createBlock(b, cmdsB, fb, 0);
 
         // mark both with same conflict group
         vm.prank(owner);
@@ -300,7 +308,7 @@ contract BlockProvenanceTest is Test, Deployers {
         bytes32 hookA = keccak256("hookSetA");
         bytes4 sel = MockTarget.doNothing.selector;
         vm.prank(owner);
-        master.approveCommand(hookA, address(t), sel, "noopA");
+        master.approveCommand(hookA, address(t), "noopA");
 
         // create a block with one immutable command for hookA
         MasterControl.Command[] memory cmds = new MasterControl.Command[](1);
@@ -308,13 +316,14 @@ contract BlockProvenanceTest is Test, Deployers {
             hookPath: hookA,
             target: address(t),
             selector: sel,
-            data: abi.encodePacked(bytes1(0x01)), // immutable
             callType: MasterControl.CallType.Delegate
         });
 
         uint256 blockId = 500;
         vm.prank(owner);
-        master.createBlock(blockId, cmds, 0);
+        bool[] memory flags1 = new bool[](cmds.length);
+        flags1[0] = false;
+        master.createBlock(blockId, cmds, flags1, 0);
         vm.prank(owner);
         master.setBlockMetadata(blockId, true, bytes32(0));
 
@@ -336,7 +345,6 @@ contract BlockProvenanceTest is Test, Deployers {
             hookPath: hookA,
             target: address(t),
             selector: sel,
-            data: abi.encodePacked(bytes1(0x01)),
             callType: MasterControl.CallType.Delegate
         });
         vm.prank(address(this));
