@@ -2,6 +2,7 @@
 pragma solidity ^0.8.9;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "./GasBank.sol";
 
 /// @title GasRebateManager
 /// @notice Minimal on-chain contract to receive epoch batch credits from an off-chain AVS operator
@@ -24,10 +25,22 @@ contract GasRebateManager is Ownable {
 
     // operators allowed to push epoch credits
     mapping(address => bool) public operators;
-    
+
+    // gas bank contract that holds ETH for rebates
+    GasBank public gasBank;
+
+    event GasBankUpdated(address indexed gasBank);
+
     /// @notice Initialize Ownable with deployer as owner
     constructor() Ownable(msg.sender) {
         // owner set to deployer
+    }
+
+    /// @notice Set GasBank contract address (owner)
+    function setGasBank(address gasBankAddr) external onlyOwner {
+        require(gasBankAddr != address(0), "Zero gasBank");
+        gasBank = GasBank(payable(gasBankAddr));
+        emit GasBankUpdated(gasBankAddr);
     }
 
     event OperatorUpdated(address indexed operator, bool enabled);
@@ -66,6 +79,17 @@ contract GasRebateManager is Ownable {
         require(users.length == amounts.length, "Mismatched arrays");
         require(users.length > 0, "Empty batch");
         require(!epochProcessed[epoch], "Epoch already processed");
+        require(address(gasBank) != address(0), "GasBank not set");
+
+        // compute total required amount
+        uint256 totalAmount = 0;
+        for (uint256 i = 0; i < amounts.length; i++) {
+            totalAmount += amounts[i];
+        }
+        require(totalAmount > 0, "Zero total amount");
+
+        // Pull funds from GasBank to this contract to fund payouts. GasBank will only allow this contract to withdraw if configured.
+        gasBank.withdrawTo(address(this), totalAmount);
 
         // Mark epoch processed to prevent double-submission for the same epoch
         epochProcessed[epoch] = true;

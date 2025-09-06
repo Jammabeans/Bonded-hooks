@@ -24,9 +24,14 @@ contract DegenPool is Ownable, ReentrancyGuard {
     // settlement role addresses allowed to mint (operator)
     mapping(address => bool) public settlementRole;
 
+    // share splitter address and events
+    address public shareSplitter;
+    event ShareSplitterUpdated(address indexed splitter);
+    event DepositFromSplitter(address indexed from, uint256 amount);
+ 
     // cumulative reward per point scaled by SCALE
     uint256 public cumulativeRewardPerPoint;
-
+ 
     // per-user last checkpoint of cumulativeRewardPerPoint
     mapping(address => uint256) public userCumPerPoint;
 
@@ -56,10 +61,28 @@ contract DegenPool is Ownable, ReentrancyGuard {
         emit DepositReceived(msg.sender, msg.value);
     }
 
+    /// @notice Called by ShareSplitter to deposit funds on behalf of users.
+    /// Only the configured shareSplitter address may call this.
+    function depositFromSplitter() external payable {
+        require(msg.sender == shareSplitter, "Not share splitter");
+        require(msg.value > 0, "No ETH");
+        if (totalPoints > 0) {
+            cumulativeRewardPerPoint += (msg.value * SCALE) / totalPoints;
+        }
+        // use tx.origin as the original sender for logging purposes (splitter forwarded on behalf)
+        emit DepositFromSplitter(tx.origin, msg.value);
+    }
+
     /// @notice Set settlement role (operator).
     function setSettlementRole(address operator, bool enabled) external onlyOwner {
         settlementRole[operator] = enabled;
         emit SettlementRoleUpdated(operator, enabled);
+    }
+
+    /// @notice Set the ShareSplitter contract allowed to call depositFromSplitter
+    function setShareSplitter(address splitter) external onlyOwner {
+        shareSplitter = splitter;
+        emit ShareSplitterUpdated(splitter);
     }
 
     /// @notice Mint points to multiple accounts in batch. For accounts that already have active points,

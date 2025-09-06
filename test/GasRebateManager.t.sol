@@ -3,6 +3,7 @@ pragma solidity ^0.8.9;
 
 import "forge-std/Test.sol";
 import "../src/GasRebateManager.sol";
+import "../src/GasBank.sol";
 
 contract GasRebateManagerTest is Test {
     GasRebateManager gm;
@@ -16,12 +17,16 @@ contract GasRebateManagerTest is Test {
     event RebateWithdrawn(address indexed user, uint256 amount);
     event Received(address indexed sender, uint256 amount);
 
+    GasBank gb;
     function setUp() public {
         gm = new GasRebateManager();
-        // fund contract with 5 ether
+        gb = new GasBank();
+        // wire GasBank <-> GasRebateManager and fund GasBank with 5 ether
+        gb.setRebateManager(address(gm));
+        gm.setGasBank(address(gb));
         vm.deal(address(this), 10 ether);
-        (bool ok, ) = address(gm).call{value: 5 ether}("");
-        require(ok, "fund failed");
+        (bool ok, ) = address(gb).call{value: 5 ether}("");
+        require(ok, "fund gb failed");
 
         // register operator
         gm.setOperator(operator, true);
@@ -45,9 +50,9 @@ contract GasRebateManagerTest is Test {
         assertEq(gm.rebateBalance(user1), amounts[0]);
         assertEq(gm.rebateBalance(user2), amounts[1]);
 
-        // record contract balance before withdraw
+        // record contract balance before withdraw (gm should have pulled funds during push)
         uint256 contractBefore = address(gm).balance;
-        assertEq(contractBefore, 5 ether);
+        assertEq(contractBefore, 3 ether);
 
         // have user1 withdraw
         vm.prank(user1);
@@ -93,31 +98,27 @@ contract GasRebateManagerTest is Test {
     }
 
     function testUnderfundedWithdrawRevertsAndBalanceIntact() public {
-        // Drain contract to ensure it's underfunded
+        // Drain GasBank to ensure it's underfunded
         address payable drainTo = payable(address(0xDD));
-        uint256 contractBal = address(gm).balance;
+        uint256 contractBal = address(gb).balance;
         if (contractBal > 0) {
-            gm.ownerWithdraw(drainTo, contractBal);
+            gb.ownerWithdraw(drainTo, contractBal);
         }
-        assertEq(address(gm).balance, 0);
+        assertEq(address(gb).balance, 0);
 
-        // Operator pushes credits larger than contract balance
+        // Operator pushes credits larger than GasBank balance -> push should revert because GasBank has insufficient funds
         uint256 epoch = 20;
         address[] memory users = new address[](1);
         users[0] = user1;
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = 1 ether;
-
+ 
         vm.prank(operator);
+        vm.expectRevert(bytes("Insufficient balance"));
         gm.pushGasPoints(epoch, users, amounts);
-
-        // User attempts to withdraw but contract has no funds => call should revert with ETH transfer failed
-        vm.prank(user1);
-        vm.expectRevert(bytes("ETH transfer failed"));
-        gm.withdrawGasRebate();
-
-        // Because the withdraw reverted, user's rebateBalance should remain unchanged
-        assertEq(gm.rebateBalance(user1), amounts[0]);
+ 
+        // rebateBalance should remain zero for user
+        assertEq(gm.rebateBalance(user1), 0);
     }
 
     function testOperatorEnableDisable() public {

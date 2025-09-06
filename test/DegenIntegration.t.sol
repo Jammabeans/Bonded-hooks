@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/DegenPool.sol";
 import "../src/BidManager.sol";
 import "../src/GasRebateManager.sol";
+import "../src/GasBank.sol";
 
 contract IntegrationTest is Test {
     DegenPool degen;
@@ -114,11 +115,15 @@ contract IntegrationTest is Test {
     /// - settle/consume bids and ownerRecoverBid routes consumed funds into DegenPool
     /// - assert final balances and state across contracts
     function testFullEndToEndFlow() public {
-        // make this test contract an operator for gm and fund gm
+        // make this test contract an operator for gm and fund GasBank, then wire GasBank <-> GasRebateManager
         gm.setOperator(address(this), true);
+        GasBank gb = new GasBank();
+        // configure GasBank and GasRebateManager so gm can pull funds
+        gb.setRebateManager(address(gm));
+        gm.setGasBank(address(gb));
         vm.deal(address(this), 3 ether);
-        (bool okFund, ) = address(gm).call{value: 3 ether}("");
-        require(okFund, "gm fund failed");
+        (bool okFund, ) = address(gb).call{value: 3 ether}("");
+        require(okFund, "gb fund failed");
 
         // operator pushes rebates to bidders
         uint256 epoch = 100;
@@ -151,9 +156,9 @@ contract IntegrationTest is Test {
 
         // bidders create bids in BidManager using remaining ETH
         vm.prank(bidder1);
-        bm.createBid{value: 0.5 ether}(10);
+        bm.createBid{value: 0.5 ether}(0, 0, 10);
         vm.prank(bidder2);
-        bm.createBid{value: 0.25 ether}(20);
+        bm.createBid{value: 0.25 ether}(0, 0, 20);
 
         // finalize epoch to consume parts of the bids (this test contract has settlement role)
         address[] memory bidAddrs = new address[](2);
@@ -169,8 +174,8 @@ contract IntegrationTest is Test {
         bm.ownerWithdraw(payable(address(degen)), consumed[0] + consumed[1]);
 
         // Assert bids were debited
-        assertEq(bm.getBid(bidder1).amountWei, 0.5 ether - 0.3 ether);
-        assertEq(bm.getBid(bidder2).amountWei, 0.25 ether - 0.2 ether);
+        assertEq(bm.getBid(bidder1).totalBidAmount, 0.5 ether - 0.3 ether);
+        assertEq(bm.getBid(bidder2).totalBidAmount, 0.25 ether - 0.2 ether);
 
         // DegenPool contract balance should reflect deposits + recovered amounts
         uint256 expected = 1 ether + 0.5 ether + 0.3 ether + 0.2 ether; // deposits + recovered
