@@ -2,18 +2,19 @@
 pragma solidity ^0.8.20;
 
 import {ERC1155} from "solmate/src/tokens/ERC1155.sol";
-// --- Uniswap V4 Periphery Imports ---
-import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
-import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {PoolId} from "v4-core/types/PoolId.sol";
-import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
-import {SwapParams, ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol";
-import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
-import {Hooks} from "v4-core/libraries/Hooks.sol";
-import {console} from "forge-std/console.sol";
-import {AccessControl} from "./AccessControl.sol";
-import {MemoryCard} from "./MemoryCard.sol";
+ // --- Uniswap V4 Periphery Imports ---
+ import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
+ import {PoolKey} from "v4-core/types/PoolKey.sol";
+ import {PoolId} from "v4-core/types/PoolId.sol";
+ import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+ import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "v4-core/types/BeforeSwapDelta.sol";
+ import {SwapParams, ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol";
+ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
+ import {Hooks} from "v4-core/libraries/Hooks.sol";
+ import {Currency} from "v4-core/types/Currency.sol";
+ import {console} from "forge-std/console.sol";
+ import {AccessControl} from "./AccessControl.sol";
+ import {MemoryCard} from "./MemoryCard.sol";
 
 // --- Hook Interface for Dispatch ---
 interface IHook {
@@ -46,6 +47,12 @@ contract MasterControl is BaseHook, ERC1155 {
 
     // poolId => hookPath (bytes32) => array of commands
     mapping(uint256 => mapping(bytes32 => Command[])) public poolCommands;
+    // Per-pool list of unique command targets + per-target aggregated fee bips.
+    // These are maintained when commands are added/removed (setCommands / applyBlocksToPool / clearCommands)
+    // so we can cheaply return active command targets and the fees they contribute for the whole pool.
+    mapping(uint256 => address[]) public poolCommandTargets;
+    mapping(uint256 => mapping(address => bool)) public poolHasCommandTarget;
+    mapping(uint256 => mapping(address => uint256)) public poolCommandTargetFeeBips;
     
     // Access control registry (maps poolId => admin)
     AccessControl public accessControl;
@@ -78,9 +85,13 @@ contract MasterControl is BaseHook, ERC1155 {
     address public memoryCard;
     // Whitelist of allowed config keys for pool admin writes (owner-managed)
     mapping(bytes32 => bool) public allowedConfigKey;
-// Bundle semantics (block-level):
-// If a block is marked immutable, any commands applied from that block are immutable for that pool.
-mapping(uint256 => bool) public blockImmutable;
+    // Track command fee bips (per-pool per-hookPath) and aggregate per-pool total.
+    // Fee is stored in basis points (1% = 100 bips). Commands that do not expose a fee getter are treated as 0 bips.
+    mapping(uint256 => mapping(bytes32 => uint256)) public poolHookFeeBips;
+    mapping(uint256 => uint256) public poolTotalFeeBips;
+ // Bundle semantics (block-level):
+ // If a block is marked immutable, any commands applied from that block are immutable for that pool.
+ mapping(uint256 => bool) public blockImmutable;
 // Optional conflict group for a block — blocks sharing a non-zero group are mutually exclusive per-pool.
 mapping(uint256 => bytes32) public blockConflictGroup;
 // Tracks whether a conflict group is active for a given pool (poolId => conflictGroup => active)
@@ -93,7 +104,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     event BlockApplied(uint256 indexed blockId, uint256 indexed poolId, bytes32 indexed hookPath);
     
     event CommandsSet(uint256 indexed poolId, bytes32 indexed hookPath, bytes32 commandsHash);
-    
+    event PoolFeeBipsUpdated(uint256 indexed poolId, uint256 totalFeeBips);
     event CommandApproved(bytes32 indexed hookPath, address indexed target, string name);
     event CommandToggled(bytes32 indexed hookPath, address indexed target, bool enabled);
     event MemoryCardDeployed(address indexed memoryCard);
@@ -232,7 +243,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         uint256 poolId = getPoolId(key);
         // Forward full typed parameters to hook commands: sender, key, sqrtPriceX96
         runHooks_BeforeInitialize(poolId, hookPath, sender, key, sqrtPriceX96);
-        console.log("sender MC _beforeInitialize", sender);
+        //console.log("sender MC _beforeInitialize", sender);
         return this.beforeInitialize.selector;
     }
  
@@ -342,7 +353,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         );
                                                                                                                                                 // Call typed afterSwap runners; they return an int128 if applicable
         int128 updatedValue = runHooks_AfterSwap(poolId, hookPath, sender, key, params, delta, hookData);
-                return (this.afterSwap.selector, updatedValue);
+        return (this.afterSwap.selector, updatedValue);
     }
  
     // 5. Donate Hooks
@@ -604,7 +615,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     function setCommands(uint256 poolId, bytes32 hookPath, Command[] calldata cmds) external {
         require(address(accessControl) != address(0), "AccessControl not configured");
         require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
-
+    
         // Ensure we do not remove any command that is locked via per-command lock or originated from an immutable block
         Command[] storage existing = poolCommands[poolId][hookPath];
         for (uint i = 0; i < existing.length; i++) {
@@ -619,7 +630,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
                 }
                 require(found, "MasterControl: cannot remove locked command");
             }
-
+    
             // provenance-based immutability
             uint256 origin = commandOriginBlock[poolId][hookPath][existing[i].target][existing[i].selector];
             if (origin != 0 && blockImmutable[origin]) {
@@ -633,13 +644,27 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
                 require(found2, "MasterControl: cannot remove command from immutable block");
             }
         }
-
-        // Replace storage array atomically
+    
+        // Remove fee contribution of existing commands (best-effort)
+        for (uint256 i2 = 0; i2 < existing.length; i2++) {
+            uint256 fee = _getCommandFeeBips(existing[i2].target);
+            _removeCommandFees(poolId, existing[i2].target, fee);
+        }
+    
+        // Replace storage array atomically and register new commands' fees
         delete poolCommands[poolId][hookPath];
+        uint256 newSum = 0;
         for (uint k = 0; k < cmds.length; k++) {
             poolCommands[poolId][hookPath].push(cmds[k]);
             emit CommandsSet(poolId, hookPath, keccak256(abi.encode(cmds[k])));
+            uint256 fee = _getCommandFeeBips(cmds[k].target);
+            newSum += fee;
+            _addCommandFees(poolId, cmds[k].target, fee);
         }
+    
+        // Update hook-level bookkeeping
+        poolHookFeeBips[poolId][hookPath] = newSum;
+        emit PoolFeeBipsUpdated(poolId, newSum);
     }
 
     /// @notice Clear commands for a given pool/hookPath. Only callable by pool admin.
@@ -647,14 +672,23 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     function clearCommands(uint256 poolId, bytes32 hookPath) external {
         require(address(accessControl) != address(0), "AccessControl not configured");
         require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
-
+    
         Command[] storage existing = poolCommands[poolId][hookPath];
         for (uint i = 0; i < existing.length; i++) {
             require(!commandLockedForPool[poolId][hookPath][existing[i].target][existing[i].selector], "MasterControl: contains locked command");
             uint256 origin = commandOriginBlock[poolId][hookPath][existing[i].target][existing[i].selector];
             require(!(origin != 0 && blockImmutable[origin]), "MasterControl: contains immutable block command");
         }
+    
+        // Remove fee contributions from bookkeeping (best-effort)
+        for (uint256 i2 = 0; i2 < existing.length; i2++) {
+            uint256 fee = _getCommandFeeBips(existing[i2].target);
+            _removeCommandFees(poolId, existing[i2].target, fee);
+        }
+    
         delete poolCommands[poolId][hookPath];
+        poolHookFeeBips[poolId][hookPath] = 0;
+        emit PoolFeeBipsUpdated(poolId, poolTotalFeeBips[poolId]);
         emit CommandsSet(poolId, hookPath, keccak256(abi.encodePacked("cleared")));
     }
 
@@ -773,19 +807,23 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
 
             for (uint j = 0; j < cmds.length; j++) {
                 bytes32 cmdHook = cmds[j].hookPath;
-
+    
                 // Append this command into the pool's command list for the command's hookPath
                 poolCommands[poolId][cmdHook].push(cmds[j]);
-
+    
                 // Record provenance for this command (origin block id)
                 commandOriginBlock[poolId][cmdHook][cmds[j].target][cmds[j].selector] = bId;
-
+    
                 // If this command was flagged immutable in the originating block, or the block is immutable,
                 // mark it locked for this pool
                 if (blockCommandImmutable[bId][j] || blockImmutable[bId]) {
                     commandLockedForPool[poolId][cmdHook][cmds[j].target][cmds[j].selector] = true;
                 }
-
+    
+                // Update fee bookkeeping: attempt to read COMMAND_FEE_BIPS and aggregate per-target
+                uint256 feeBips = _getCommandFeeBips(cmds[j].target);
+                _addCommandFees(poolId, cmds[j].target, feeBips);
+    
                 bytes32 cmdHash = keccak256(abi.encode(cmds[j]));
                 emit CommandsSet(poolId, cmdHook, cmdHash);
             }
@@ -794,6 +832,45 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
             emit BlockApplied(bId, poolId, representativeHook);
         }
     }
+
+    // --- Fee & per-target helpers ---
+    /// @notice Internal helper to add a target's fee bips to pool bookkeeping and register the target.
+    function _addCommandFees(uint256 poolId, address target, uint256 feeBips) internal {
+        if (feeBips == 0) return;
+        poolCommandTargetFeeBips[poolId][target] += feeBips;
+        poolTotalFeeBips[poolId] += feeBips;
+        if (!poolHasCommandTarget[poolId][target]) {
+            poolHasCommandTarget[poolId][target] = true;
+            poolCommandTargets[poolId].push(target);
+        }
+    }
+    
+    /// @notice Internal helper to remove/reduce a target's fee bips from pool bookkeeping and unregister if zero.
+    function _removeCommandFees(uint256 poolId, address target, uint256 feeBips) internal {
+        if (feeBips == 0) return;
+        uint256 cur = poolCommandTargetFeeBips[poolId][target];
+        if (cur <= feeBips) {
+            if (cur > 0) {
+                poolTotalFeeBips[poolId] -= cur;
+                poolCommandTargetFeeBips[poolId][target] = 0;
+            }
+            if (poolHasCommandTarget[poolId][target]) {
+                poolHasCommandTarget[poolId][target] = false;
+                address[] storage arr = poolCommandTargets[poolId];
+                for (uint256 i = 0; i < arr.length; i++) {
+                    if (arr[i] == target) {
+                        arr[i] = arr[arr.length - 1];
+                        arr.pop();
+                        break;
+                    }
+                }
+            }
+        } else {
+            poolCommandTargetFeeBips[poolId][target] = cur - feeBips;
+            poolTotalFeeBips[poolId] -= feeBips;
+        }
+    }
+
 
     // --- Utility: Derive hook path from PoolKey (customize as needed) ---
     function getPoolHookPath(PoolKey calldata key) internal pure returns (bytes32) {
@@ -808,6 +885,16 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
         PoolId id = mk.toId();
         return uint256(PoolId.unwrap(id));
     }
-
+    
+    /// @notice Read a command's fee in basis points (COMMAND_FEE_BIPS) if exposed; returns 0 on failure.
+    /// @dev Tries to call the auto-generated getter `COMMAND_FEE_BIPS()` on the target contract.
+    ///      The returned integer is interpreted directly as bips (no further conversion).
+    function _getCommandFeeBips(address target) internal view returns (uint256) {
+        bytes4 sel = bytes4(keccak256("COMMAND_FEE_BIPS()"));
+        (bool success, bytes memory data) = target.staticcall(abi.encodeWithSelector(sel));
+        if (!success || data.length == 0) return 0;
+        // Decode directly to uint256 (accepts standard 32-byte ABI-encoded integer)
+        return abi.decode(data, (uint256));
+    }
     
 }

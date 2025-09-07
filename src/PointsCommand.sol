@@ -6,7 +6,6 @@ import {PoolId} from "v4-core/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {SwapParams} from "v4-core/types/PoolOperation.sol";
 //import {IMemoryCard} from "./IMemoryCard.sol";
-import "forge-std/console.sol";
 
 interface IMemoryCard {
     function read(address user, bytes32 key) external view returns (bytes memory);
@@ -39,6 +38,9 @@ contract PointsCommand {
     bytes32 constant KEY_BONUS_THRESHOLD = keccak256("bonus_threshold");
     bytes32 constant KEY_BONUS_PERCENT = keccak256("bonus_percent");
     bytes32 constant KEY_BASE_POINTS_PERCENT = keccak256("base_points_percent");
+    // Fixed, contract-embedded hook fee (in basis points). Immutable for this command.
+    // Use bips (1 bip = 0.01%). Example: 5 bips = 0.05% fee.
+    uint256 public constant COMMAND_FEE_BIPS = 5;
 
     // --- Entry point for dispatcher via delegatecall ---
     // context must include memoryCard address, pointsToken address, config keys as needed
