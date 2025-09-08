@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
+import "../src/AccessControl.sol";
 import {Shaker} from "../src/Shaker.sol";
 import {PrizeBox} from "../src/PrizeBox.sol";
 import {MockShareSplitter, MockDegenShare} from "../src/interfaces/MocksAndInterfaces.sol";
@@ -16,11 +17,14 @@ contract EdgecasesTest is Test {
     address bob = address(2);
 
     function setUp() public {
+        AccessControl acl = new AccessControl();
         avs = address(this);
         splitter = new MockShareSplitter();
-        prizeBox = new PrizeBox(avs);
-        shaker = new Shaker(address(splitter), address(prizeBox), avs);
+        prizeBox = new PrizeBox(acl, avs);
+        shaker = new Shaker(acl, address(splitter), address(prizeBox), avs);
         // register shaker as authorized awarder
+        acl.grantRole(prizeBox.ROLE_PRIZEBOX_ADMIN(), address(this));
+        acl.grantRole(shaker.ROLE_SHAKER_ADMIN(), address(this));
         prizeBox.setShaker(address(shaker));
 
         // mint a share token for tests

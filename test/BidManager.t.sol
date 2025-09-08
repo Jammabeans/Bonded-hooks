@@ -3,6 +3,7 @@ pragma solidity ^0.8.9;
 
 import "forge-std/Test.sol";
 import "../src/BidManager.sol";
+import "../src/AccessControl.sol";
 
 contract BidManagerTest is Test {
     BidManager bm;
@@ -15,7 +16,11 @@ contract BidManagerTest is Test {
     event BidConsumed(address indexed bidder, uint256 amountConsumed);
 
     function setUp() public {
-        bm = new BidManager();
+        AccessControl acl = new AccessControl();
+        // grant this test the admin role so owner-only flows continue to work under ACL
+        bytes32 ROLE_BID_MANAGER_ADMIN = keccak256("ROLE_BID_MANAGER_ADMIN");
+        acl.grantRole(ROLE_BID_MANAGER_ADMIN, address(this));
+        bm = new BidManager(acl);
     }
 
     function testCreateAndTopUpAndConsume() public {

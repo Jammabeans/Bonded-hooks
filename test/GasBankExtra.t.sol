@@ -2,6 +2,7 @@
 pragma solidity ^0.8.9;
 
 import "forge-std/Test.sol";
+import "../src/AccessControl.sol";
 import "../src/GasBank.sol";
 import "../src/GasRebateManager.sol";
 import "../src/ShareSplitter.sol";
@@ -22,14 +23,22 @@ contract GasBankExtraTest is Test {
     address recipient = address(0xBEEF);
 
     function setUp() public {
-        gb = new GasBank();
-        gm = new GasRebateManager();
-        dp = new DegenPool();
-        fc = new FeeCollector();
+        AccessControl acl = new AccessControl();
+        gb = new GasBank(acl);
+        gm = new GasRebateManager(acl);
+        dp = new DegenPool(acl);
+        fc = new FeeCollector(acl);
         // create a second GasBank to test settings wiring separately when needed
-        gb2 = new GasBank();
-        settings = new Settings(address(gb), address(dp), address(fc));
-        splitter = new ShareSplitter(address(settings));
+        gb2 = new GasBank(acl);
+        
+        settings = new Settings(address(gb), address(dp), address(fc), acl);
+        // grant admin roles for test convenience (owner-like permissions under ACL)
+        acl.grantRole(gb.ROLE_GAS_BANK_ADMIN(), address(this));
+        acl.grantRole(gm.ROLE_GAS_REBATE_ADMIN(), address(this));
+        acl.grantRole(dp.ROLE_DEGEN_ADMIN(), address(this));
+        acl.grantRole(fc.ROLE_FEE_COLLECTOR_ADMIN(), address(this));
+        acl.grantRole(settings.ROLE_SETTINGS_ADMIN(), address(this));
+        splitter = new ShareSplitter(address(settings), acl);
     }
 
     function testAllowPublicDepositsToggleAndShareSplitterDeposit() public {

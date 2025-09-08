@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.9;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "./AccessControl.sol";
 import "./GasBank.sol";
 
 /// @title GasRebateManager
@@ -16,28 +16,35 @@ import "./GasBank.sol";
 /// - The contract holds ETH which users withdraw via `withdrawGasRebate`.
 /// - This is a simple starter implementation (Preset A). It intentionally keeps logic minimal so it can
 ///   be extended later (Merkle-style commitments, disputes/slashing, multiple operators, etc).
-contract GasRebateManager is Ownable {
+contract GasRebateManager {
+    // Legacy owner retained for compatibility; prefer role-based checks via AccessControl.
+    address public owner;
+    AccessControl public accessControl;
+    bytes32 public constant ROLE_GAS_REBATE_ADMIN = keccak256("ROLE_GAS_REBATE_ADMIN");
+
     // epoch => pushed
     mapping(uint256 => bool) public epochProcessed;
-
+ 
     // user => wei amount available to withdraw
     mapping(address => uint256) public rebateBalance;
-
+ 
     // operators allowed to push epoch credits
     mapping(address => bool) public operators;
-
+ 
     // gas bank contract that holds ETH for rebates
     GasBank public gasBank;
-
+ 
     event GasBankUpdated(address indexed gasBank);
-
-    /// @notice Initialize Ownable with deployer as owner
-    constructor() Ownable(msg.sender) {
-        // owner set to deployer
+ 
+    /// @notice Initialize with deployer as owner and optional AccessControl
+    constructor(AccessControl _accessControl) {
+        owner = msg.sender;
+        accessControl = _accessControl;
     }
 
-    /// @notice Set GasBank contract address (owner)
-    function setGasBank(address gasBankAddr) external onlyOwner {
+    /// @notice Set GasBank contract address (admin)
+    function setGasBank(address gasBankAddr) external {
+        require(_isAdmin(msg.sender), "GasRebateManager: not admin");
         require(gasBankAddr != address(0), "Zero gasBank");
         gasBank = GasBank(payable(gasBankAddr));
         emit GasBankUpdated(gasBankAddr);
@@ -61,7 +68,8 @@ contract GasRebateManager is Ownable {
     /// @notice Owner can set or unset operator addresses that are authorized to push epoch credits.
     /// @param operatorAddr operator address
     /// @param enabled true to enable, false to disable
-    function setOperator(address operatorAddr, bool enabled) external onlyOwner {
+    function setOperator(address operatorAddr, bool enabled) external {
+        require(_isAdmin(msg.sender), "GasRebateManager: not admin");
         operators[operatorAddr] = enabled;
         emit OperatorUpdated(operatorAddr, enabled);
     }
@@ -121,10 +129,19 @@ contract GasRebateManager is Ownable {
     /// @notice Emergency function: owner can withdraw any ETH balance from the contract.
     /// Use cautiously (e.g., for migration or recovery). Funds intended for rebates should be
     /// managed separately or with governance in production.
-    function ownerWithdraw(address payable to, uint256 amount) external onlyOwner {
+    function ownerWithdraw(address payable to, uint256 amount) external {
+        require(_isAdmin(msg.sender), "GasRebateManager: not admin");
         require(address(this).balance >= amount, "Insufficient balance");
         (bool sent, ) = to.call{value: amount}("");
         require(sent, "ETH transfer failed");
+    }
+ 
+    /// @notice Helper: prefer AccessControl role when configured, otherwise fall back to owner.
+    function _isAdmin(address user) internal view returns (bool) {
+        if (address(accessControl) != address(0)) {
+            return accessControl.hasRole(ROLE_GAS_REBATE_ADMIN, user);
+        }
+        return user == owner;
     }
 
     /// @notice Helper: batch view to check balances for multiple users

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "./AccessControl.sol";
+
 /// @notice Shaker — mini-game coordinator
 /// @dev AVS (authorized address) starts rounds by providing a poolId. Ticket pricing is compounded per purchase.
 ///      When a round finalizes AVS calls finalizeRound which splits funds and deposits prize portions into PrizeBox(s).
@@ -18,6 +20,9 @@ contract Shaker {
     uint256 public constant BIPS_DENOM = 10000;
 
     address public owner;
+    AccessControl public accessControl;
+    bytes32 public constant ROLE_SHAKER_ADMIN = keccak256("ROLE_SHAKER_ADMIN");
+
     address public avs; // authorized AVS address that may start/finalize rounds
     IShareSplitter public shareSplitter;
     IPrizeBox public prizeBoxContract;
@@ -59,7 +64,7 @@ contract Shaker {
     event FundsSplit(uint256 indexed roundId, uint256 prizeBoxAmount, uint256 lpAmount, uint256 otherAmount);
 
     modifier onlyOwner() {
-        require(msg.sender == owner, "Shaker: only owner");
+        require(_isShakerAdmin(msg.sender), "Shaker: not admin");
         _;
     }
 
@@ -78,8 +83,9 @@ contract Shaker {
 
     uint256 private _locked = 1;
 
-    constructor(address _shareSplitter, address _prizeBox, address _avs) {
+    constructor(AccessControl _accessControl, address _shareSplitter, address _prizeBox, address _avs) {
         owner = msg.sender;
+        accessControl = _accessControl;
         shareSplitter = IShareSplitter(_shareSplitter);
         prizeBoxContract = IPrizeBox(_prizeBox);
         avs = _avs;
@@ -267,4 +273,13 @@ contract Shaker {
 
     // Allow contract to receive ETH (e.g., leftover or admin funds)
     receive() external payable {}
+
+    /// @notice Helper that prefers role-based checks when AccessControl is configured,
+    ///         otherwise falls back to legacy owner semantics for compatibility.
+    function _isShakerAdmin(address user) internal view returns (bool) {
+        if (address(accessControl) != address(0)) {
+            return accessControl.hasRole(ROLE_SHAKER_ADMIN, user);
+        }
+        return user == owner;
+    }
 }

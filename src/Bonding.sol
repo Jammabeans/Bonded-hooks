@@ -9,22 +9,28 @@ pragma solidity ^0.8.20;
 /// @dev This contract is intentionally conservative: users cannot withdraw their principal; only authorized withdrawers
 ///      can reduce a user's bonded amount. Reward distribution uses a fixed PRECISION constant.
 
-interface IERC20 {
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-    function transfer(address to, uint256 amount) external returns (bool);
-}
+import "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import "./AccessControl.sol";
 
 contract Bonding {
     uint256 public constant PRECISION = 1e36;
-
+ 
+    // Legacy owner (deployer) retained for backwards compatibility; prefer role-based checks via AccessControl.
     address public owner;
-
-    // Authorized publishers that may call recordFee (e.g., MasterControl)
+ 
+    // Central AccessControl registry (optional - zero address means legacy owner mode)
+    AccessControl public accessControl;
+ 
+    // Role constants
+    bytes32 public constant ROLE_BONDING_PUBLISHER = keccak256("ROLE_BONDING_PUBLISHER");
+    bytes32 public constant ROLE_BONDING_WITHDRAWER = keccak256("ROLE_BONDING_WITHDRAWER");
+    bytes32 public constant ROLE_BONDING_ADMIN = keccak256("ROLE_BONDING_ADMIN");
+ 
+    /// @notice Backwards-compatible toggle maps. During migration these remain valid;
+    /// require either the boolean toggle OR the corresponding role in AccessControl.
     mapping(address => bool) public authorizedPublisher;
-
-    // Authorized withdrawers (GasBank, ShareSplitter) who may withdraw user bonds/principal
     mapping(address => bool) public authorizedWithdrawer;
-
+ 
     // Per-target per-currency total bonded principal
     // target => currency => total amount
     mapping(address => mapping(address => uint256)) public totalBonded;
@@ -63,22 +69,31 @@ contract Bonding {
     }
 
     modifier onlyOwner() {
-        require(msg.sender == owner, "Bonding: only owner");
+        require(_isBondingAdmin(msg.sender), "Bonding: only owner");
         _;
     }
 
     modifier onlyPublisher() {
-        require(authorizedPublisher[msg.sender], "Bonding: only publisher");
+        require(
+            authorizedPublisher[msg.sender] ||
+            (address(accessControl) != address(0) && accessControl.hasRole(ROLE_BONDING_PUBLISHER, msg.sender)),
+            "Bonding: only publisher"
+        );
         _;
     }
 
     modifier onlyWithdrawer() {
-        require(authorizedWithdrawer[msg.sender], "Bonding: only withdrawer");
+        require(
+            authorizedWithdrawer[msg.sender] ||
+            (address(accessControl) != address(0) && accessControl.hasRole(ROLE_BONDING_WITHDRAWER, msg.sender)),
+            "Bonding: only withdrawer"
+        );
         _;
     }
 
-    constructor() {
+    constructor(AccessControl _accessControl) {
         owner = msg.sender;
+        accessControl = _accessControl;
         emit OwnershipTransferred(address(0), msg.sender);
     }
 
@@ -257,6 +272,15 @@ contract Bonding {
 
     // --- Utilities: safe transfers ---
 
+    /// @notice Helper: is the supplied account an admin for bonding actions?
+    /// Prefers role-based check when AccessControl is configured, otherwise falls back to legacy owner.
+    function _isBondingAdmin(address user) internal view returns (bool) {
+        if (address(accessControl) != address(0)) {
+            return accessControl.hasRole(ROLE_BONDING_ADMIN, user);
+        }
+        return user == owner;
+    }
+ 
     function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, amount));
         require(success && (data.length == 0 || abi.decode(data, (bool))), "Bonding: ERC20 transferFrom failed");

@@ -7,10 +7,7 @@ import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {SwapParams} from "v4-core/types/PoolOperation.sol";
 //import {IMemoryCard} from "./IMemoryCard.sol";
 
-interface IMemoryCard {
-    function read(address user, bytes32 key) external view returns (bytes memory);
-    function write(bytes32 key, bytes calldata value) external;
-}
+import "./IMemoryCard.sol";
 
 // Minimal MasterControl read interface used by commands at delegatecall-time
 interface IMasterControl {

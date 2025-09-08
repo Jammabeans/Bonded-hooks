@@ -4,9 +4,11 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {Bonding} from "../src/Bonding.sol";
+import {AccessControl} from "../src/AccessControl.sol";
 
 contract BondingTest is Test {
     Bonding bonding;
+    AccessControl accessControl;
     address owner;
     address alice;
     address bob;
@@ -14,11 +16,17 @@ contract BondingTest is Test {
 
     function setUp() public {
         owner = address(this);
-        bonding = new Bonding();
+        accessControl = new AccessControl();
+        bonding = new Bonding(accessControl);
+ 
+        // Grant admin role so tests can perform owner-only operations under the new ACL model
+        bytes32 ROLE_BONDING_ADMIN = keccak256("ROLE_BONDING_ADMIN");
+        accessControl.grantRole(ROLE_BONDING_ADMIN, address(this));
+ 
         alice = address(1);
         bob = address(2);
         target = address(0xBEEF);
-
+ 
         // give test addresses some ETH
         vm.deal(alice, 10 ether);
         vm.deal(bob, 10 ether);

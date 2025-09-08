@@ -28,11 +28,7 @@ interface IHook {
     // Add other hook entrypoints as needed...
 }
 
-// Minimal MemoryCard interface used by MasterControl for pool-scoped config reads/writes
-interface IMemoryCard {
-    function read(address user, bytes32 key) external view returns (bytes memory);
-    function write(bytes32 key, bytes calldata value) external;
-}
+import "./IMemoryCard.sol";
 
 contract MasterControl is BaseHook, ERC1155 {
 
@@ -57,8 +53,20 @@ contract MasterControl is BaseHook, ERC1155 {
     // Access control registry (maps poolId => admin)
     AccessControl public accessControl;
  
-    // MasterControl admin (contract-level)
+    // MasterControl admin (legacy - retained for backward compatibility)
     address public owner;
+ 
+    // Role for contract-level master operations (use AccessControl.hasRole when configured)
+    bytes32 public constant ROLE_MASTER = keccak256("ROLE_MASTER");
+ 
+    /// @notice Helper that prefers role-based checks when AccessControl is configured,
+    ///         otherwise falls back to legacy owner semantics for compatibility.
+    function _isMasterAdmin(address user) internal view returns (bool) {
+        if (address(accessControl) != address(0)) {
+            return accessControl.hasRole(ROLE_MASTER, user);
+        }
+        return user == owner;
+    }
  
     // Approved commands registry per hookPath: hookPath => target => approved (selectors validated at block/apply time)
     mapping(bytes32 => mapping(address => bool)) public commandEnabled;
@@ -109,16 +117,19 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     event CommandToggled(bytes32 indexed hookPath, address indexed target, bool enabled);
     event MemoryCardDeployed(address indexed memoryCard);
 
-    /// @notice Approve a command target for a hookPath. Owner-only.
+    /// @notice Approve a command target for a hookPath.
+    /// When AccessControl is configured this requires the caller to hold ROLE_MASTER,
+    /// otherwise falls back to the legacy owner check.
     function approveCommand(bytes32 hookPath, address target, string memory name) external {
-        require(msg.sender == owner, "MasterControl: only owner");
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         commandEnabled[hookPath][target] = true;
         emit CommandApproved(hookPath, target, name);
     }
     
-    /// @notice Toggle approval for a command target for a hookPath. Owner-only.
+    /// @notice Toggle approval for a command target for a hookPath.
+    /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function setCommandEnabled(bytes32 hookPath, address target, bool enabled) external {
-        require(msg.sender == owner, "MasterControl: only owner");
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         commandEnabled[hookPath][target] = enabled;
         emit CommandToggled(hookPath, target, enabled);
     }
@@ -139,23 +150,26 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         accessControl = AccessControl(_accessControl);
     }    
         
-    /// @notice Owner-only: set the MemoryCard address used for pool config storage
+    /// @notice Set the MemoryCard address used for pool config storage.
+    /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function setMemoryCard(address _mc) external {
-        require(msg.sender == owner, "MasterControl: only owner");
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         require(_mc != address(0), "MasterControl: zero address");
         memoryCard = _mc;
     }
     
-    /// @notice Owner-only: toggle allowed config keys that pool admins may write
+    /// @notice Toggle allowed config keys that pool admins may write.
+    /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     /// Pass the canonical key constant (e.g., KEY_BONUS_THRESHOLD) as `key`
     function setAllowedConfigKey(bytes32 key, bool allowed) external {
-        require(msg.sender == owner, "MasterControl: only owner");
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         allowedConfigKey[key] = allowed;
     }
     
-    /// @notice Owner-only: set the PoolLaunchPad address the MasterControl will accept registrations from
+    /// @notice Set the PoolLaunchPad address the MasterControl will accept registrations from.
+    /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function setPoolLaunchPad(address _pad) external {
-        require(msg.sender == owner, "MasterControl: only owner");
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         poolLaunchPad = _pad;
     }
     
@@ -579,12 +593,12 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         }
     }
 
-    // Batch run of Command[] for setup (owner-only utility)
-    // Owner-only: execute target commands. For backward compatibility with legacy command
-    // implementations that expect a trailing `bytes` parameter, commands will be invoked with a
-    // single empty `bytes` parameter.
+    // Batch run of Command[] for setup.
+    // Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
+    // For backward compatibility with legacy command implementations that expect a trailing `bytes`,
+    // commands will be invoked with a single empty `bytes` parameter.
     function runCommandBatch(Command[] calldata commands) external {
-        require(msg.sender == owner, "MasterControl: only owner");
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         bytes memory emptyBytes = "";
         for (uint i = 0; i < commands.length; i++) {
             bool success;
@@ -694,10 +708,11 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
 
     // --- Command Block Management (ALL_REQUIRED semantics) ---
 
-    /// @notice Owner creates a whitelisted block of commands.
+    /// @notice Create a whitelisted block of commands.
+    /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     /// blockId is an arbitrary numeric id chosen by owner; each Command must include its hookPath.
     function createBlock(uint256 blockId, Command[] calldata commands, bool[] calldata immutableFlags, uint64 expiresAt) external {
-        require(msg.sender == owner, "MasterControl: only owner");
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         require(!blockEnabled[blockId], "MasterControl: block exists");
         require(commands.length > 0, "MasterControl: empty block");
         require(commands.length <= MAX_COMMANDS_PER_BLOCK, "MasterControl: too many commands");
@@ -732,17 +747,19 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         bytes32 representativeHook = keccak256(abi.encode(commands));
         emit BlockCreated(blockId, representativeHook, commandsHash);
     }
-/// @notice Owner may set block-level metadata after creating a block (immutable flag / conflict group).
+/// @notice Set block-level metadata after creating a block (immutable flag / conflict group).
+/// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
 function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 conflictGroup) external {
-    require(msg.sender == owner, "MasterControl: only owner");
+    require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
     require(blockEnabled[blockId], "MasterControl: block not found");
     blockImmutable[blockId] = immutableForPools;
     blockConflictGroup[blockId] = conflictGroup;
 }
 
     /// @notice Revoke a block so it cannot be applied in the future.
+    /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function revokeBlock(uint256 blockId) external {
-        require(msg.sender == owner, "MasterControl: only owner");
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         require(blockEnabled[blockId], "MasterControl: block not found");
         blockEnabled[blockId] = false;
         delete blockCommands[blockId];

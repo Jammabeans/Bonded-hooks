@@ -2,6 +2,7 @@
 pragma solidity ^0.8.9;
 
 import "forge-std/Test.sol";
+import "../src/AccessControl.sol";
 import "../src/DegenPool.sol";
 import "../src/GasBank.sol";
 import "../src/FeeCollector.sol";
@@ -22,13 +23,22 @@ contract DegenPoolTest is Test {
     event RewardsWithdrawn(address indexed account, uint256 amountPaid, uint256 pointsBurned);
 
     function setUp() public {
-        // deploy degen pool and supporting contracts, wire Settings and ShareSplitter with default splits:
-        // GasBank=400, DegenPool=250, Fees=100
-        degen = new DegenPool();
-        gb = new GasBank();
-        fc = new FeeCollector();
-        s = new Settings(address(gb), address(degen), address(fc));
-        splitter = new ShareSplitter(address(s));
+        // deploy central AccessControl and pass into refactored contracts
+        AccessControl acl = new AccessControl();
+        // deploy core contracts wired with ACL
+        degen = new DegenPool(acl);
+        gb = new GasBank(acl);
+        fc = new FeeCollector(acl);
+        // Settings expects (gasBank, degenPool, feeCollector, AccessControl)
+        s = new Settings(address(gb), address(degen), address(fc), acl);
+        splitter = new ShareSplitter(address(s), acl);
+ 
+        // grant admin roles so this test contract can call admin APIs and configure settlement roles
+        acl.grantRole(degen.ROLE_DEGEN_ADMIN(), address(this));
+        acl.grantRole(gb.ROLE_GAS_BANK_ADMIN(), address(this));
+        acl.grantRole(fc.ROLE_FEE_COLLECTOR_ADMIN(), address(this));
+        acl.grantRole(s.ROLE_SETTINGS_ADMIN(), address(this));
+        acl.grantRole(splitter.ROLE_SHARE_ADMIN(), address(this));
  
         // configure degen to accept deposits from splitter (optional; splitter currently forwards via call)
         degen.setSettlementRole(address(this), true);

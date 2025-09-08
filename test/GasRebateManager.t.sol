@@ -19,15 +19,20 @@ contract GasRebateManagerTest is Test {
 
     GasBank gb;
     function setUp() public {
-        gm = new GasRebateManager();
-        gb = new GasBank();
+        // deploy central ACL and pass into contracts
+        AccessControl acl = new AccessControl();
+        gm = new GasRebateManager(acl);
+        gb = new GasBank(acl);
+        // grant admin roles so this test can configure contracts under ACL
+        acl.grantRole(gm.ROLE_GAS_REBATE_ADMIN(), address(this));
+        acl.grantRole(gb.ROLE_GAS_BANK_ADMIN(), address(this));
         // wire GasBank <-> GasRebateManager and fund GasBank with 5 ether
         gb.setRebateManager(address(gm));
         gm.setGasBank(address(gb));
         vm.deal(address(this), 10 ether);
         (bool ok, ) = address(gb).call{value: 5 ether}("");
         require(ok, "fund gb failed");
-
+ 
         // register operator
         gm.setOperator(operator, true);
     }

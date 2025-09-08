@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.9;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "./AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title DegenPool
@@ -12,15 +12,20 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 ///   retroactively claim past deposits.
 /// - On withdraw, the user receives (pendingRewards + owedFromActivePoints) and half of their points
 ///   are burned as a penalty.
-contract DegenPool is Ownable, ReentrancyGuard {
+contract DegenPool is ReentrancyGuard {
     uint256 public constant SCALE = 1e18;
-
+ 
+    // Legacy owner retained for compatibility; prefer role-based checks via AccessControl.
+    address public owner;
+    AccessControl public accessControl;
+    bytes32 public constant ROLE_DEGEN_ADMIN = keccak256("ROLE_DEGEN_ADMIN");
+ 
     // active points that participate in reward distribution
     mapping(address => uint256) public points;
     // pendingRewards denominated in wei (ETH) that were accumulated for the user when they received new points
     mapping(address => uint256) public pendingRewards;
     uint256 public totalPoints;
-
+ 
     // settlement role addresses allowed to mint (operator)
     mapping(address => bool) public settlementRole;
 
@@ -47,7 +52,10 @@ contract DegenPool is Ownable, ReentrancyGuard {
         _;
     }
 
-    constructor() Ownable(msg.sender) {}
+    constructor(AccessControl _accessControl) {
+        owner = msg.sender;
+        accessControl = _accessControl;
+    }
 
     /// @notice Receive ETH from pools or anyone. Immediately allocate to cumulativeRewardPerPoint
     /// if there are active points. If totalPoints == 0, funds remain in contract balance until
@@ -74,13 +82,15 @@ contract DegenPool is Ownable, ReentrancyGuard {
     }
 
     /// @notice Set settlement role (operator).
-    function setSettlementRole(address operator, bool enabled) external onlyOwner {
+    function setSettlementRole(address operator, bool enabled) external {
+        require(_isDegenAdmin(msg.sender), "DegenPool: not admin");
         settlementRole[operator] = enabled;
         emit SettlementRoleUpdated(operator, enabled);
     }
 
     /// @notice Set the ShareSplitter contract allowed to call depositFromSplitter
-    function setShareSplitter(address splitter) external onlyOwner {
+    function setShareSplitter(address splitter) external {
+        require(_isDegenAdmin(msg.sender), "DegenPool: not admin");
         shareSplitter = splitter;
         emit ShareSplitterUpdated(splitter);
     }
@@ -186,10 +196,20 @@ contract DegenPool is Ownable, ReentrancyGuard {
         emit RewardsWithdrawn(msg.sender, payout, burned);
     }
 
-    /// @notice Emergency: owner may withdraw ETH from contract (use with care).
-    function ownerWithdraw(address payable to, uint256 amount) external onlyOwner {
+    /// @notice Emergency: admin may withdraw ETH from contract (use with care).
+    function ownerWithdraw(address payable to, uint256 amount) external {
+        require(_isDegenAdmin(msg.sender), "DegenPool: not admin");
         require(address(this).balance >= amount, "Insufficient balance");
         (bool sent, ) = to.call{value: amount}("");
         require(sent, "Withdraw failed");
+    }
+ 
+    /// @notice Helper that prefers role-based checks when AccessControl is configured,
+    ///         otherwise falls back to legacy owner semantics for compatibility.
+    function _isDegenAdmin(address user) internal view returns (bool) {
+        if (address(accessControl) != address(0)) {
+            return accessControl.hasRole(ROLE_DEGEN_ADMIN, user);
+        }
+        return user == owner;
     }
 }

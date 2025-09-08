@@ -1,32 +1,39 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.9;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "./AccessControl.sol";
 
 /// @title Settings
 /// @notice Stores default and per-sender share splits used by ShareSplitter.
 /// Shares are simple (recipient, weight). Owner may update default shares or set per-sender overrides.
-contract Settings is Ownable {
+contract Settings {
     struct Share {
         address recipient;
         uint256 weight;
     }
-
+ 
+    // Legacy owner retained for backward compatibility; prefer role-based checks via AccessControl.
+    address public owner;
+    AccessControl public accessControl;
+    bytes32 public constant ROLE_SETTINGS_ADMIN = keccak256("ROLE_SETTINGS_ADMIN");
+ 
     // default shares array
     Share[] internal defaultShares;
-
+ 
     // per-sender override shares
     mapping(address => Share[]) internal customShares;
     mapping(address => bool) public hasCustomShares;
-
+ 
     event DefaultSharesUpdated(address[] recipients, uint256[] weights);
     event CustomSharesUpdated(address indexed ownerAddr, address[] recipients, uint256[] weights);
-
+ 
     /// @notice Initialize Settings with deployer as owner and set initial default split.
     /// @param gasBank address for GasBank share
     /// @param degenPool address for DegenPool share
     /// @param feeCollector address for FeeCollector share
-    constructor(address gasBank, address degenPool, address feeCollector) Ownable(msg.sender) {
+    constructor(address gasBank, address degenPool, address feeCollector, AccessControl _accessControl) {
+        owner = msg.sender;
+        accessControl = _accessControl;
         require(gasBank != address(0) && degenPool != address(0) && feeCollector != address(0), "Zero addr");
         address[] memory recips = new address[](3);
         uint256[] memory weights = new uint256[](3);
@@ -40,8 +47,9 @@ contract Settings is Ownable {
         _setDefaultShares(recips, weights);
     }
 
-    /// @notice Owner can replace the default shares entirely.
-    function setDefaultShares(address[] calldata recipients, uint256[] calldata weights) external onlyOwner {
+    /// @notice Admin can replace the default shares entirely.
+    function setDefaultShares(address[] calldata recipients, uint256[] calldata weights) external {
+        require(_isSettingsAdmin(msg.sender), "Settings: not admin");
         _setDefaultShares(recipients, weights);
     }
 
@@ -61,8 +69,9 @@ contract Settings is Ownable {
         emit DefaultSharesUpdated(recipients, weights);
     }
 
-    /// @notice Owner may set per-sender custom shares (override default).
-    function setCustomSharesFor(address ownerAddr, address[] calldata recipients, uint256[] calldata weights) external onlyOwner {
+    /// @notice Admin may set per-sender custom shares (override default).
+    function setCustomSharesFor(address ownerAddr, address[] calldata recipients, uint256[] calldata weights) external {
+        require(_isSettingsAdmin(msg.sender), "Settings: not admin");
         require(ownerAddr != address(0), "Zero owner");
         _setCustomShares(ownerAddr, recipients, weights);
     }
@@ -83,8 +92,9 @@ contract Settings is Ownable {
         emit CustomSharesUpdated(ownerAddr, recipients, weights);
     }
 
-    /// @notice Owner may clear custom shares for an address (revert to default)
-    function clearCustomSharesFor(address ownerAddr) external onlyOwner {
+    /// @notice Admin may clear custom shares for an address (revert to default)
+    function clearCustomSharesFor(address ownerAddr) external {
+        require(_isSettingsAdmin(msg.sender), "Settings: not admin");
         delete customShares[ownerAddr];
         hasCustomShares[ownerAddr] = false;
         emit CustomSharesUpdated(ownerAddr, new address[](0), new uint256[](0));
@@ -112,6 +122,15 @@ contract Settings is Ownable {
             }
             return (recipients, weights);
         }
+    }
+ 
+    /// @notice Helper that prefers role-based checks when AccessControl is configured,
+    ///         otherwise falls back to legacy owner semantics for compatibility.
+    function _isSettingsAdmin(address user) internal view returns (bool) {
+        if (address(accessControl) != address(0)) {
+            return accessControl.hasRole(ROLE_SETTINGS_ADMIN, user);
+        }
+        return user == owner;
     }
 
     /// @notice Get default shares explicitly

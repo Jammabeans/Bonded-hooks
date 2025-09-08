@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.9;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "./AccessControl.sol";
 
 /// @title BidManager
 /// @notice Minimal on-chain bid manager for GasRebate AVS
-contract BidManager is Ownable {
+contract BidManager {
+    // Legacy owner retained for compatibility; prefer role-based checks via AccessControl.
+    address public owner;
+    AccessControl public accessControl;
+    bytes32 public constant ROLE_BID_MANAGER_ADMIN = keccak256("ROLE_BID_MANAGER_ADMIN");
+
     uint256 public constant MIN_BID_WEI = 0.01 ether;
     uint32 public constant MAX_RUSH = 1000;
 
@@ -36,9 +41,13 @@ contract BidManager is Ownable {
         _;
     }
 
-    constructor() Ownable(msg.sender) {}
+    constructor(AccessControl _accessControl) {
+        owner = msg.sender;
+        accessControl = _accessControl;
+    }
 
-    function setSettlementRole(address operator, bool enabled) external onlyOwner {
+    function setSettlementRole(address operator, bool enabled) external {
+        require(_isAdmin(msg.sender), "BidManager: not admin");
         settlementRole[operator] = enabled;
         emit SettlementRoleUpdated(operator, enabled);
     }
@@ -111,7 +120,8 @@ contract BidManager is Ownable {
         emit EpochFinalized(epoch, msg.sender);
     }
 
-    function ownerRecoverBid(address bidderAddr, address payable to, uint256 amount) external onlyOwner {
+    function ownerRecoverBid(address bidderAddr, address payable to, uint256 amount) external {
+        require(_isAdmin(msg.sender), "BidManager: not admin");
         Bid storage b = bids[bidderAddr];
         require(b.bidder != address(0), "Unknown bid");
         require(b.totalBidAmount >= amount, "Insufficient bid balance");
@@ -120,8 +130,16 @@ contract BidManager is Ownable {
         require(sent, "Transfer failed");
     }
 
-    function ownerWithdraw(address payable to, uint256 amount) external onlyOwner {
+    function ownerWithdraw(address payable to, uint256 amount) external {
+        require(_isAdmin(msg.sender), "BidManager: not admin");
         (bool sent, ) = to.call{value: amount}("");
         require(sent, "Withdraw failed");
+    }
+ 
+    function _isAdmin(address user) internal view returns (bool) {
+        if (address(accessControl) != address(0)) {
+            return accessControl.hasRole(ROLE_BID_MANAGER_ADMIN, user);
+        }
+        return user == owner;
     }
 }

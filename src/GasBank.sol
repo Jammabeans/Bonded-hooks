@@ -1,11 +1,16 @@
  // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.9;
  
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "./AccessControl.sol";
  
 /// @title GasBank
 /// @notice Holds ETH earmarked for gas rebates. Only the configured rebateManager may withdraw funds for rebate payouts.
-contract GasBank is Ownable {
+contract GasBank {
+    // Legacy owner retained for backward compatibility; prefer role-based checks via AccessControl.
+    address public owner;
+    AccessControl public accessControl;
+    bytes32 public constant ROLE_GAS_BANK_ADMIN = keccak256("ROLE_GAS_BANK_ADMIN");
+
     address public rebateManager;
     address public shareSplitter;
     bool public allowPublicDeposits = true;
@@ -16,27 +21,33 @@ contract GasBank is Ownable {
     event ShareSplitterUpdated(address indexed splitter);
     event AllowPublicDepositsUpdated(bool allowed);
  
-    constructor() Ownable(msg.sender) {}
+    constructor(AccessControl _accessControl) {
+        owner = msg.sender;
+        accessControl = _accessControl;
+    }
  
     receive() external payable {
         require(allowPublicDeposits || msg.sender == shareSplitter, "Deposits not allowed");
         emit DepositReceived(msg.sender, msg.value);
     }
  
-    /// @notice Owner sets the rebate manager contract that is allowed to pull funds for rebates.
-    function setRebateManager(address manager) external onlyOwner {
+    /// @notice Admin sets the rebate manager contract that is allowed to pull funds for rebates.
+    function setRebateManager(address manager) external {
+        require(_isGasBankAdmin(msg.sender), "GasBank: not admin");
         rebateManager = manager;
         emit RebateManagerUpdated(manager);
     }
  
-    /// @notice Owner sets the ShareSplitter contract allowed to deposit when public deposits are disabled.
-    function setShareSplitter(address splitter) external onlyOwner {
+    /// @notice Admin sets the ShareSplitter contract allowed to deposit when public deposits are disabled.
+    function setShareSplitter(address splitter) external {
+        require(_isGasBankAdmin(msg.sender), "GasBank: not admin");
         shareSplitter = splitter;
         emit ShareSplitterUpdated(splitter);
     }
  
-    /// @notice Owner may toggle whether public deposits are allowed.
-    function setAllowPublicDeposits(bool allowed) external onlyOwner {
+    /// @notice Admin may toggle whether public deposits are allowed.
+    function setAllowPublicDeposits(bool allowed) external {
+        require(_isGasBankAdmin(msg.sender), "GasBank: not admin");
         allowPublicDeposits = allowed;
         emit AllowPublicDepositsUpdated(allowed);
     }
@@ -50,10 +61,20 @@ contract GasBank is Ownable {
         emit WithdrawnForRebate(to, amount);
     }
  
-    /// @notice Owner recovery method
-    function ownerWithdraw(address payable to, uint256 amount) external onlyOwner {
+    /// @notice Owner recovery method (admin-capable under ACL).
+    function ownerWithdraw(address payable to, uint256 amount) external {
+        require(_isGasBankAdmin(msg.sender), "GasBank: not admin");
         require(address(this).balance >= amount, "Insufficient balance");
         (bool sent, ) = to.call{value: amount}("");
         require(sent, "Withdraw failed");
+    }
+
+    /// @notice Helper that prefers role-based checks when AccessControl is configured,
+    ///         otherwise falls back to legacy owner semantics for compatibility.
+    function _isGasBankAdmin(address user) internal view returns (bool) {
+        if (address(accessControl) != address(0)) {
+            return accessControl.hasRole(ROLE_GAS_BANK_ADMIN, user);
+        }
+        return user == owner;
     }
 }

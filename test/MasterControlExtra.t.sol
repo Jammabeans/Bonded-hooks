@@ -51,10 +51,13 @@ contract MasterControlExtraTest is Test, Deployers {
         access = new AccessControl();
         vm.prank(owner);
         master.setAccessControl(address(access));
-
+ 
+        // grant the master role to the master owner so owner-only master ops work via _isMasterAdmin
+        access.grantRole(master.ROLE_MASTER(), owner);
+ 
         launchpad = new PoolLaunchPad(manager, access);
         access.setPoolLaunchPad(address(launchpad));
-
+ 
         vm.prank(owner);
         master.setPoolLaunchPad(address(launchpad));
     }
@@ -417,12 +420,12 @@ contract MasterControlExtraTest is Test, Deployers {
 
         // non-owner cannot approveCommand
         vm.prank(address(1));
-        vm.expectRevert(bytes("MasterControl: only owner"));
+        vm.expectRevert(bytes("MasterControl: not master admin"));
         master.approveCommand(hookPath, address(this), "x");
  
         // non-owner cannot toggle
         vm.prank(address(1));
-        vm.expectRevert(bytes("MasterControl: only owner"));
+        vm.expectRevert(bytes("MasterControl: not master admin"));
         master.setCommandEnabled(hookPath, address(this), true);
     }
 

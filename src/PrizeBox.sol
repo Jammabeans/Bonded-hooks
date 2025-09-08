@@ -6,15 +6,9 @@ pragma solidity ^0.8.20;
 ///      Opening a box transfers contained ETH/ERC20 to the box owner and burns any registered share tokens.
 ///      Minimal ERC721 implementation included to keep dependencies small.
 
-interface IERC20 {
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-    function transfer(address to, uint256 amount) external returns (bool);
-}
-
-interface IBurnable {
-    /// @notice burn tokens from `account` (contract must hold the tokens)
-    function burnFrom(address account, uint256 amount) external;
-}
+import "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {IBurnable} from "./interfaces/MocksAndInterfaces.sol";
+import "./AccessControl.sol";
 
 contract PrizeBox {
     // --- ERC721 minimal storage ---
@@ -27,7 +21,11 @@ contract PrizeBox {
 
     uint256 public nextBoxId = 1;
 
+    // Legacy owner (deployer) retained for backward compatibility; prefer role-based checks via AccessControl.
     address public owner;
+    AccessControl public accessControl;
+    bytes32 public constant ROLE_PRIZEBOX_ADMIN = keccak256("ROLE_PRIZEBOX_ADMIN");
+
     address public avs; // authorized AVS address
     address public shaker; // authorized Shaker contract that may be allowed to award boxes
 
@@ -80,22 +78,25 @@ contract PrizeBox {
     event BoxOpened(uint256 indexed boxId, address indexed opener);
     event SharesBurned(uint256 indexed boxId, address indexed token, uint256 amount);
 
-    constructor(address _avs) {
+    constructor(AccessControl _accessControl, address _avs) {
         owner = msg.sender;
+        accessControl = _accessControl;
         avs = _avs;
         emit OwnershipTransferred(address(0), owner);
         emit AVSSet(_avs);
     }
 
     // --- Admin ---
-    function transferOwnership(address newOwner) external onlyOwner {
+    function transferOwnership(address newOwner) external {
+        require(_isPrizeAdmin(msg.sender), "PrizeBox: not admin");
         require(newOwner != address(0), "PrizeBox: zero owner");
         address old = owner;
         owner = newOwner;
         emit OwnershipTransferred(old, newOwner);
     }
 
-    function setAVS(address _avs) external onlyOwner {
+    function setAVS(address _avs) external {
+        require(_isPrizeAdmin(msg.sender), "PrizeBox: not admin");
         avs = _avs;
         emit AVSSet(_avs);
     }
@@ -144,8 +145,9 @@ contract PrizeBox {
         return id;
     }
 
-    /// @notice Owner may set the Shaker contract address that is allowed to award boxes
-    function setShaker(address _shaker) external onlyOwner {
+    /// @notice Admin may set the Shaker contract address that is allowed to award boxes
+    function setShaker(address _shaker) external {
+        require(_isPrizeAdmin(msg.sender), "PrizeBox: not admin");
         shaker = _shaker;
     }
 
@@ -251,4 +253,13 @@ contract PrizeBox {
 
     // Allow contract to receive ETH
     receive() external payable {}
+
+    /// @notice Helper that prefers role-based checks when AccessControl is configured,
+    ///         otherwise falls back to legacy owner semantics for compatibility.
+    function _isPrizeAdmin(address user) internal view returns (bool) {
+        if (address(accessControl) != address(0)) {
+            return accessControl.hasRole(ROLE_PRIZEBOX_ADMIN, user);
+        }
+        return user == owner;
+    }
 }

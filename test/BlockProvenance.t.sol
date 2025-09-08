@@ -32,9 +32,11 @@ contract BlockProvenanceTest is Test, Deployers {
         owner = master.owner();
 
         access = new AccessControl();
+        // grant ROLE_MASTER in AccessControl to the deployed MasterControl owner so master admin calls work
+        access.grantRole(master.ROLE_MASTER(), owner);
         vm.prank(owner);
         master.setAccessControl(address(access));
-
+ 
         launchpad = new PoolLaunchPad(manager, access);
         access.setPoolLaunchPad(address(launchpad));
         vm.prank(owner);

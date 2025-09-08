@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
+import "../src/AccessControl.sol";
 import "../src/DegenPool.sol";
 import "../src/BidManager.sol";
 import "../src/GasRebateManager.sol";
@@ -11,16 +12,24 @@ contract IntegrationTest is Test {
     DegenPool degen;
     BidManager bm;
     GasRebateManager gm;
+    AccessControl acl;
 
     address pool = address(0x100);
     address bidder1 = address(0xB1);
     address bidder2 = address(0xB2);
 
     function setUp() public {
-        degen = new DegenPool();
-        bm = new BidManager();
-        gm = new GasRebateManager();
-
+        // deploy central AccessControl and pass into refactored contracts
+        acl = new AccessControl();
+        degen = new DegenPool(acl);
+        bm = new BidManager(acl);
+        gm = new GasRebateManager(acl);
+ 
+        // grant admin roles so this test contract can call admin APIs and configure settlement roles
+        acl.grantRole(degen.ROLE_DEGEN_ADMIN(), address(this));
+        acl.grantRole(bm.ROLE_BID_MANAGER_ADMIN(), address(this));
+        acl.grantRole(gm.ROLE_GAS_REBATE_ADMIN(), address(this));
+ 
         // give settlement role to this test contract so it can call settlement functions
         degen.setSettlementRole(address(this), true);
         bm.setSettlementRole(address(this), true);
@@ -62,7 +71,7 @@ contract IntegrationTest is Test {
     /// - deposit2 -> bidder2 should receive share only from deposit2
     function testPendingPointsNotRetroactiveAndPaidAfterAllocation() public {
         // redeploy fresh DegenPool to reset state
-        degen = new DegenPool();
+        degen = new DegenPool(acl);
         degen.setSettlementRole(address(this), true);
 
         // bidder1 active points = 1000
@@ -117,7 +126,9 @@ contract IntegrationTest is Test {
     function testFullEndToEndFlow() public {
         // make this test contract an operator for gm and fund GasBank, then wire GasBank <-> GasRebateManager
         gm.setOperator(address(this), true);
-        GasBank gb = new GasBank();
+        GasBank gb = new GasBank(acl);
+        // grant GasBank admin role to this test contract so it can configure the bank
+        acl.grantRole(gb.ROLE_GAS_BANK_ADMIN(), address(this));
         // configure GasBank and GasRebateManager so gm can pull funds
         gb.setRebateManager(address(gm));
         gm.setGasBank(address(gb));

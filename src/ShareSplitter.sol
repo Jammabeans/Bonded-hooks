@@ -1,19 +1,26 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.9;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
+import {AccessControl} from "./AccessControl.sol";
 import "./Settings.sol";
 
 /// @title ShareSplitter
 /// @notice Splits incoming ETH according to per-sender or default shares from Settings and forwards to recipients.
-contract ShareSplitter is Ownable {
+contract ShareSplitter {
     event SplitExecuted(address indexed sender, uint256 amount, address[] recipients, uint256[] amounts);
 
     Settings public settings;
 
-    constructor(address settingsAddr) Ownable(msg.sender) {
+    // Legacy owner (deployer) retained for backward compatibility; prefer role-based checks via AccessControl.
+    address public owner;
+    AccessControl public accessControl;
+    bytes32 public constant ROLE_SHARE_ADMIN = keccak256("ROLE_SHARE_ADMIN");
+
+    constructor(address settingsAddr, AccessControl _accessControl) {
         require(settingsAddr != address(0), "Zero settings");
         settings = Settings(settingsAddr);
+        owner = msg.sender;
+        accessControl = _accessControl;
     }
 
     receive() external payable {
@@ -59,8 +66,18 @@ contract ShareSplitter is Ownable {
         emit SplitExecuted(sender, amount, recipients, amounts);
     }
 
-    function setSettings(address settingsAddr) external onlyOwner {
+    function setSettings(address settingsAddr) external {
+        require(_isShareAdmin(msg.sender), "ShareSplitter: not admin");
         require(settingsAddr != address(0), "Zero settings");
         settings = Settings(settingsAddr);
+    }
+
+    /// @notice Helper that prefers role-based checks when AccessControl is configured,
+    ///         otherwise falls back to legacy owner semantics for compatibility.
+    function _isShareAdmin(address user) internal view returns (bool) {
+        if (address(accessControl) != address(0)) {
+            return accessControl.hasRole(ROLE_SHARE_ADMIN, user);
+        }
+        return user == owner;
     }
 }
