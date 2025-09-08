@@ -21,11 +21,21 @@ contract ShareSplitterTest is Test {
     event DepositReceived(address indexed from, uint256 amount);
 
     function setUp() public {
-        gb = new GasBank();
-        dp = new DegenPool();
-        fc = new FeeCollector();
-        settings = new Settings(address(gb), address(dp), address(fc));
-        splitter = new ShareSplitter(address(settings));
+        // deploy central ACL and pass into contracts so tests can use role-based checks
+        AccessControl acl = new AccessControl();
+        gb = new GasBank(acl);
+        dp = new DegenPool(acl);
+        fc = new FeeCollector(acl);
+        settings = new Settings(address(gb), address(dp), address(fc), acl);
+       
+        // grant this test the admin roles so owner-like behaviors continue to work under ACL
+        acl.grantRole(gb.ROLE_GAS_BANK_ADMIN(), address(this));
+        acl.grantRole(dp.ROLE_DEGEN_ADMIN(), address(this));
+        acl.grantRole(fc.ROLE_FEE_COLLECTOR_ADMIN(), address(this));
+        acl.grantRole(settings.ROLE_SETTINGS_ADMIN(), address(this));
+        acl.grantRole(keccak256("ROLE_SHARE_ADMIN"), address(this));
+ 
+        splitter = new ShareSplitter(address(settings), acl);
     }
 
     function testSplitAndForwardBasic() public {

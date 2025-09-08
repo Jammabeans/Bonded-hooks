@@ -2,6 +2,7 @@
 pragma solidity ^0.8.9;
 
 import "forge-std/Test.sol";
+import "../src/AccessControl.sol";
 import "../src/Settings.sol";
 import "../src/GasBank.sol";
 import "../src/DegenPool.sol";
@@ -14,10 +15,16 @@ contract SettingsTest is Test {
     FeeCollector fc;
 
     function setUp() public {
-        gb = new GasBank();
-        dp = new DegenPool();
-        fc = new FeeCollector();
-        settings = new Settings(address(gb), address(dp), address(fc));
+        AccessControl acl = new AccessControl();
+        gb = new GasBank(acl);
+        dp = new DegenPool(acl);
+        fc = new FeeCollector(acl);
+        settings = new Settings(address(gb), address(dp), address(fc), acl);
+        // grant settings admin so test can call owner APIs under ACL
+        acl.grantRole(settings.ROLE_SETTINGS_ADMIN(), address(this));
+        acl.grantRole(gb.ROLE_GAS_BANK_ADMIN(), address(this));
+        acl.grantRole(dp.ROLE_DEGEN_ADMIN(), address(this));
+        acl.grantRole(fc.ROLE_FEE_COLLECTOR_ADMIN(), address(this));
     }
 
     function testDefaultSharesInitialized() public {

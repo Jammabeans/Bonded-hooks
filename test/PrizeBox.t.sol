@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
+import "../src/AccessControl.sol";
 import {PrizeBox} from "../src/PrizeBox.sol";
 import {MockDegenShare, MockBondedShare} from "../src/interfaces/MocksAndInterfaces.sol";
 
@@ -13,10 +14,13 @@ contract PrizeBoxTest is Test {
     address alice = address(1);
 
     function setUp() public {
-        prizeBox = new PrizeBox(avs);
+        AccessControl acl = new AccessControl();
+        prizeBox = new PrizeBox(acl, avs);
+        // grant admin role so this test can call admin APIs when needed
+        acl.grantRole(prizeBox.ROLE_PRIZEBOX_ADMIN(), address(this));
         degen = new MockDegenShare();
         bonded = new MockBondedShare();
-
+ 
         // Fund test + alice
         vm.deal(address(this), 10 ether);
         vm.deal(alice, 1 ether);

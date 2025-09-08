@@ -53,16 +53,20 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
         // Deploy MemoryCard for config and state
         memoryCard = new MemoryCard();
 
-        // Deploy MasterControl with AFTER_SWAP_FLAG set
-        uint160 flags = uint160(Hooks.ALL_HOOK_MASK);
-        deployCodeTo("MasterControl.sol:MasterControl", abi.encode(manager), address(flags));
-        masterControl = MasterControl(address(flags));
+       // Deploy MasterControl with AFTER_SWAP_FLAG set
+       uint160 flags = uint160(Hooks.ALL_HOOK_MASK);
+       deployCodeTo("MasterControl.sol:MasterControl", abi.encode(manager, address(0)), address(flags));
+       masterControl = MasterControl(address(flags));
 
-        // Deploy AccessControl and register in MasterControl as owner
-        accessControl = new AccessControl();
-        address mcOwner = masterControl.owner();
-        vm.prank(mcOwner);
-        masterControl.setAccessControl(address(accessControl));
+       // Deploy AccessControl and register in MasterControl
+       accessControl = new AccessControl();
+       address mcOwner = masterControl.owner();
+       vm.prank(mcOwner);
+       masterControl.setAccessControl(address(accessControl));
+
+       // Grant ROLE_MASTER to the original owner so legacy tests that use owner can still operate
+       bytes32 ROLE_MASTER = keccak256("ROLE_MASTER");
+       accessControl.grantRole(ROLE_MASTER, mcOwner);
 
         // Deploy PoolLaunchPad and configure AccessControl
         launchpad = new PoolLaunchPad(manager, accessControl);

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
+import "../src/AccessControl.sol";
 import {Shaker} from "../src/Shaker.sol";
 import {PrizeBox} from "../src/PrizeBox.sol";
 import {MockShareSplitter, MockDegenShare, MockBondedShare} from "../src/interfaces/MocksAndInterfaces.sol";
@@ -15,12 +16,17 @@ contract ShakerTest is Test {
     address public bob = address(2);
 
     function setUp() public {
-        // Deploy mock components
+        // Deploy ACL and mock components
+        AccessControl acl = new AccessControl();
         splitter = new MockShareSplitter();
         avs = address(this);
-        prizeBox = new PrizeBox(avs);
-        shaker = new Shaker(address(splitter), address(prizeBox), avs);
-
+        prizeBox = new PrizeBox(acl, avs);
+        shaker = new Shaker(acl, address(splitter), address(prizeBox), avs);
+ 
+        // grant admin roles so this test can call admin APIs
+        acl.grantRole(keccak256("ROLE_PRIZEBOX_ADMIN"), address(this));
+        acl.grantRole(keccak256("ROLE_SHAKER_ADMIN"), address(this));
+ 
         // Fund test contract so PrizeBox deposits succeed if needed
         vm.deal(address(this), 10 ether);
     }

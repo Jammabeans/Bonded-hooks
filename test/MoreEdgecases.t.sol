@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
+import "../src/AccessControl.sol";
 import {PrizeBox} from "../src/PrizeBox.sol";
 import {Shaker} from "../src/Shaker.sol";
 import {MockShareSplitter, MockBurnableERC20} from "../src/interfaces/MocksAndInterfaces.sol";
@@ -51,10 +52,13 @@ contract MoreEdgecases is Test {
     address other = address(2);
 
     function setUp() public {
+        AccessControl acl = new AccessControl();
         splitter = new MockShareSplitter();
-        prizeBox = new PrizeBox(avs);
-        shaker = new Shaker(address(splitter), address(prizeBox), avs);
+        prizeBox = new PrizeBox(acl, avs);
+        shaker = new Shaker(acl, address(splitter), address(prizeBox), avs);
         // authorize shaker as awarder
+        acl.grantRole(prizeBox.ROLE_PRIZEBOX_ADMIN(), address(this));
+        acl.grantRole(shaker.ROLE_SHAKER_ADMIN(), address(this));
         prizeBox.setShaker(address(shaker));
 
         tokenA = new MockBurnableERC20("A","A",18);
@@ -108,15 +112,15 @@ contract MoreEdgecases is Test {
     function test_access_control_admin_methods_negative() public {
         // non-owner (alice) attempts to set AVS / shaker / shareSplitter
         vm.prank(alice);
-        vm.expectRevert(bytes("PrizeBox: only owner"));
+        vm.expectRevert(bytes("PrizeBox: not admin"));
         prizeBox.setShaker(address(0x123));
 
         vm.prank(alice);
-        vm.expectRevert(bytes("Shaker: only owner"));
+        vm.expectRevert(bytes("Shaker: not admin"));
         shaker.setAVS(address(0x123));
 
         vm.prank(alice);
-        vm.expectRevert(bytes("Shaker: only owner"));
+        vm.expectRevert(bytes("Shaker: not admin"));
         shaker.setShareSplitter(address(0x123));
     }
 }

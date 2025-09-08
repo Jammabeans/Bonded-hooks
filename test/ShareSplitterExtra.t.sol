@@ -2,6 +2,7 @@
 pragma solidity ^0.8.9;
 
 import "forge-std/Test.sol";
+import "../src/AccessControl.sol";
 import "../src/ShareSplitter.sol";
 import "../src/Settings.sol";
 import "../src/GasBank.sol";
@@ -19,11 +20,18 @@ contract ShareSplitterExtraTest is Test {
     event SplitExecuted(address indexed sender, uint256 amount, address[] recipients, uint256[] amounts);
 
     function setUp() public {
-        gb = new GasBank();
-        dp = new DegenPool();
-        fc = new FeeCollector();
-        settings = new Settings(address(gb), address(dp), address(fc));
-        splitter = new ShareSplitter(address(settings));
+        // deploy ACL and pass into contracts
+        AccessControl acl = new AccessControl();
+        gb = new GasBank(acl);
+        dp = new DegenPool(acl);
+        fc = new FeeCollector(acl);
+        settings = new Settings(address(gb), address(dp), address(fc), acl);
+        // grant admin roles required for tests
+        acl.grantRole(gb.ROLE_GAS_BANK_ADMIN(), address(this));
+        acl.grantRole(dp.ROLE_DEGEN_ADMIN(), address(this));
+        acl.grantRole(fc.ROLE_FEE_COLLECTOR_ADMIN(), address(this));
+        acl.grantRole(settings.ROLE_SETTINGS_ADMIN(), address(this));
+        splitter = new ShareSplitter(address(settings), acl);
     }
 
     function testOwnerCanChangeDefaultAndSplitterRespectsIt() public {
