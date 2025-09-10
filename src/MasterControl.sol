@@ -15,6 +15,7 @@ import {ERC1155} from "solmate/src/tokens/ERC1155.sol";
  import {console} from "forge-std/console.sol";
  import {AccessControl} from "./AccessControl.sol";
  import {MemoryCard} from "./MemoryCard.sol";
+ import "./interfaces/IMemoryCard.sol";
 
 // --- Hook Interface for Dispatch ---
 interface IHook {
@@ -28,7 +29,7 @@ interface IHook {
     // Add other hook entrypoints as needed...
 }
 
-import "./IMemoryCard.sol";
+
 
 contract MasterControl is BaseHook, ERC1155 {
 

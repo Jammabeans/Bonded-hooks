@@ -7,7 +7,7 @@ import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {SwapParams} from "v4-core/types/PoolOperation.sol";
 //import {IMemoryCard} from "./IMemoryCard.sol";
 
-import "./IMemoryCard.sol";
+import "./interfaces/IMemoryCard.sol";
 
 // Minimal MasterControl read interface used by commands at delegatecall-time
 interface IMasterControl {
