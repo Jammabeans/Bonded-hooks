@@ -123,7 +123,7 @@ contract Bonding {
     function bondedAmount(address target, address user, address currency) external view returns (uint256) {
         return _bondedAmount[target][user][currency];
     }
-
+    
     /// @notice View pending reward for user for a target/currency
     function pendingReward(address target, address user, address currency) external view returns (uint256) {
         uint256 userAmount = _bondedAmount[target][user][currency];
@@ -133,6 +133,50 @@ contract Bonding {
         uint256 debt = _rewardDebt[target][user][currency];
         if (accrued <= debt) return 0;
         return accrued - debt;
+    }
+    
+    /// @notice Helper: return totalBonded for a target across multiple currencies in a single call.
+    /// @param target The command/target contract address
+    /// @param currencies Array of currency addresses to query (use address(0) for native)
+    /// @return totals Array of totalBonded values matched to the currencies array
+    function getTargetTotals(address target, address[] calldata currencies) external view returns (uint256[] memory totals) {
+        totals = new uint256[](currencies.length);
+        for (uint256 i = 0; i < currencies.length; i++) {
+            totals[i] = totalBonded[target][currencies[i]];
+        }
+    }
+    
+    /// @notice Helper: return user's principal and pending rewards for a target across multiple currencies.
+    /// @param target The command/target contract address
+    /// @param user The user address
+    /// @param currencies Array of currency addresses to query (use address(0) for native)
+    /// @return principals Array of user's bonded principal per currency
+    /// @return pendings Array of user's pending rewards per currency
+    function getUserPrincipalAndPending(address target, address user, address[] calldata currencies)
+        external
+        view
+        returns (uint256[] memory principals, uint256[] memory pendings)
+    {
+        uint256 len = currencies.length;
+        principals = new uint256[](len);
+        pendings = new uint256[](len);
+        for (uint256 i = 0; i < len; i++) {
+            address currency = currencies[i];
+            uint256 userAmount = _bondedAmount[target][user][currency];
+            principals[i] = userAmount;
+            if (userAmount == 0) {
+                pendings[i] = 0;
+                continue;
+            }
+            uint256 rps = rewardsPerShare[target][currency];
+            uint256 accrued = (userAmount * rps) / PRECISION;
+            uint256 debt = _rewardDebt[target][user][currency];
+            if (accrued <= debt) {
+                pendings[i] = 0;
+            } else {
+                pendings[i] = accrued - debt;
+            }
+        }
     }
 
     // --- Deposits (users deposit bonds) ---

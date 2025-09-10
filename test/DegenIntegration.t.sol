@@ -55,7 +55,7 @@ contract IntegrationTest is Test {
         // bidder1 should be able to withdraw the full 2 ETH since they hold all points
         uint256 beforeBalance = bidder1.balance;
         vm.prank(bidder1);
-        degen.withdrawRewards();
+        { address[] memory __cur = new address[](1); __cur[0] = address(0); degen.withdrawRewards(__cur); }
         uint256 afterBalance = bidder1.balance;
         assertEq(afterBalance - beforeBalance, 2 ether);
 
@@ -94,7 +94,7 @@ contract IntegrationTest is Test {
 
         // bidder2 should now have active points (checkpointed) and no pendingRewards from past deposits
         assertEq(degen.points(bidder2), 1000);
-        assertEq(degen.getPendingRewards(bidder2), 0);
+        assertEq(degen.getPendingRewards(bidder2, address(0)), 0);
 
         // total points should be 2000 now
         assertEq(degen.totalPoints(), 2000);
@@ -109,7 +109,7 @@ contract IntegrationTest is Test {
         // bidder2 should get 0.5 ETH (1 ETH * 1000 / 2000)
         uint256 beforeBalance2 = bidder2.balance;
         vm.prank(bidder2);
-        degen.withdrawRewards();
+        { address[] memory __cur = new address[](1); __cur[0] = address(0); degen.withdrawRewards(__cur); }
         uint256 afterBalance2 = bidder2.balance;
         assertEq(afterBalance2 - beforeBalance2, 0.5 ether);
 
@@ -193,7 +193,7 @@ contract IntegrationTest is Test {
         assertEq(address(degen).balance, expected);
 
         // cumulativeRewardPerPoint should have increased due to recovered deposits (since totalPoints > 0)
-        assertGt(degen.cumulativeRewardPerPoint(), 0);
+        assertGt(degen.cumulativeRewardPerPoint(address(0)), 0);
     }
 
 }

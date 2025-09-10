@@ -914,4 +914,46 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
         return abi.decode(data, (uint256));
     }
     
+    /// @notice Return metadata for a whitelisted block (commands + metadata).
+    /// @dev Exposes blockCommands (internal) and related public metadata in a single call to reduce RPCs.
+    function getBlockMeta(uint256 blockId) external view returns (Command[] memory cmds, bool enabled, uint64 expiresAt, bool immutableForPools, bytes32 conflictGroup) {
+        Command[] storage internalCmds = blockCommands[blockId];
+        uint256 len = internalCmds.length;
+        cmds = new Command[](len);
+        for (uint256 i = 0; i < len; i++) {
+            cmds[i] = internalCmds[i];
+        }
+        enabled = blockEnabled[blockId];
+        expiresAt = blockExpiresAt[blockId];
+        immutableForPools = blockImmutable[blockId];
+        conflictGroup = blockConflictGroup[blockId];
+    }
+    
+    /// @notice Return per-target fee bips for a pool in one call.
+    /// @dev Returns the list of active targets and their aggregated fee bips for the pool.
+    function getPoolCommandFees(uint256 poolId) external view returns (address[] memory targets, uint256[] memory feeBips) {
+        targets = poolCommandTargets[poolId];
+        feeBips = new uint256[](targets.length);
+        for (uint256 i = 0; i < targets.length; i++) {
+            feeBips[i] = poolCommandTargetFeeBips[poolId][targets[i]];
+        }
+    }
+    
+    /// @notice Batch query whether specific (target,selector) pairs are locked for a pool and their origin block.
+    /// @dev Accepts parallel arrays of targets and selectors and returns matching arrays of flags/origins.
+    function getLockedAndProvenance(
+        uint256 poolId,
+        bytes32 hookPath,
+        address[] calldata targets,
+        bytes4[] calldata selectors
+    ) external view returns (bool[] memory locked, uint256[] memory originBlocks) {
+        require(targets.length == selectors.length, "Length mismatch");
+        uint256 len = targets.length;
+        locked = new bool[](len);
+        originBlocks = new uint256[](len);
+        for (uint256 i = 0; i < len; i++) {
+            locked[i] = commandLockedForPool[poolId][hookPath][targets[i]][selectors[i]];
+            originBlocks[i] = commandOriginBlock[poolId][hookPath][targets[i]][selectors[i]];
+        }
+    }
 }
