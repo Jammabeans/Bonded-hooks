@@ -112,7 +112,7 @@ contract DeployScript is Script {
         // Approve the command for a representative hookPath (tests will compute actual hookPaths per-pool).
         masterControl.approveCommand(bytes32(0), address(pointsCommand), "PointsCommand");
 
-        vm.stopBroadcast();
+        
 
         // Build JSON artifact via helper to avoid "stack too deep"
         address[] memory addrs = new address[](16);
@@ -133,6 +133,10 @@ contract DeployScript is Script {
         addrs[14] = address(mockAvs);
         // reserved slot
         addrs[15] = address(0);
+
+        accessControl.registerDeployedContracts(addrs);
+
+        vm.stopBroadcast();
 
         return addrs;
     }

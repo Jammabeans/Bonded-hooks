@@ -81,4 +81,52 @@ contract AccessControl {
     function isPoolAdmin(uint256 poolId, address user) external view returns (bool) {
         return poolAdmin[poolId] == user;
     }
+
+    /* ========== Deployed Contracts Registry ========== */
+    // Allow the deploy script (owner) to register a canonical list of deployed contract addresses
+    // so other contracts and off-chain tooling can rely on AccessControl as a single source of truth.
+    event ContractsRegistered();
+
+    // registry keyed by keccak256(name) -> address
+    mapping(bytes32 => address) private contractRegistry;
+
+    /// @notice Register deployed contracts in a predefined order.
+    /// @dev Only the contract owner (deployer) may call this. The Deploy script passes an array
+    ///      of addresses in the same order as the expected keys below.
+    function registerDeployedContracts(address[] memory addrs) external {
+        require(msg.sender == owner, "AccessControl: only owner");
+        require(addrs.length >= 15, "AccessControl: insufficient addrs");
+
+        bytes32[15] memory keys = [
+            keccak256("PoolManager"),
+            keccak256("AccessControl"),
+            keccak256("PoolLaunchPad"),
+            keccak256("MasterControl"),
+            keccak256("FeeCollector"),
+            keccak256("GasBank"),
+            keccak256("DegenPool"),
+            keccak256("Settings"),
+            keccak256("ShareSplitter"),
+            keccak256("Bonding"),
+            keccak256("PrizeBox"),
+            keccak256("Shaker"),
+            keccak256("PointsCommand"),
+            keccak256("BidManager"),
+            keccak256("MockAVS")
+        ];
+
+        for (uint i = 0; i < 15; i++) {
+            contractRegistry[keys[i]] = addrs[i];
+        }
+
+        emit ContractsRegistered();
+    }
+
+    /// @notice Retrieve a registered contract address by name (e.g. "DegenPool").
+    /// @param name Human-readable name of the contract as a string.
+    /// @return addr The registered contract address or zero if not set.
+    function getContract(string calldata name) external view returns (address addr) {
+        bytes32 k = keccak256(bytes(name));
+        return contractRegistry[k];
+    }
 }
