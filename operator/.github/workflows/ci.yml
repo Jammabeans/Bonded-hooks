@@ -1,0 +1,47 @@
+name: Operator CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  operator-tests:
+    name: Operator unit tests (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install operator deps
+        working-directory: ./Bonded-hooks/operator
+        run: npm ci
+
+      - name: Run operator unit tests
+        working-directory: ./Bonded-hooks/operator
+        run: npm test --silent
+
+  solidity-tests:
+    name: Run Foundry Solidity tests
+    runs-on: ubuntu-latest
+    needs: operator-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Foundry (forge/anvil)
+        run: |
+          curl -L https://foundry.paradigm.xyz | bash
+          source ~/.bashrc || true
+          foundryup
+
+      - name: Run forge tests
+        # run from repository root (Bonded-hooks folder contains foundry.toml)
+        working-directory: ./Bonded-hooks
+        run: |
+          # Use a modest --fork-block-number or no for normal unit tests
+          forge test -v

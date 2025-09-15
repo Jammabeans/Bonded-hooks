@@ -1,0 +1,24 @@
+{
+  "name": "bonded-hooks-operator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "ts-node ./DegenAVS.ts",
+    "build": "tsc --project ./tsconfig.json",
+    "test": "jest --colors"
+  },
+  "dependencies": {
+    "dotenv": "^10.0.0",
+    "ethers": "^6.13.2"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.13",
+    "@types/node": "^20.12.12",
+    "@viem/anvil": "^0.0.10",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
