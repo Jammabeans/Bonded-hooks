@@ -12,6 +12,10 @@ interface IBonding {
     event RewardClaimed(address indexed target, address indexed user, address indexed currency, uint256 amount);
     event BondWithdrawnByAuthorized(address indexed target, address indexed user, address indexed currency, uint256 amount, address to);
 
+    // Hook request events
+    event HookRequested(uint256 indexed requestId, address indexed creator, address syntheticTarget, string ipfs);
+    event HookActivated(uint256 indexed requestId, address indexed hookAddress);
+
     // constants / getters
     function PRECISION() external view returns (uint256);
     function owner() external view returns (address);
@@ -26,6 +30,30 @@ interface IBonding {
     function totalBonded(address target, address currency) external view returns (uint256);
     function rewardsPerShare(address target, address currency) external view returns (uint256);
     function unallocatedFees(address target, address currency) external view returns (uint256);
+
+    // request getters added
+    function nextRequestId() external view returns (uint256);
+    function requests(uint256 requestId) external view returns (
+        address creator,
+        string memory ipfs,
+        address synthetic,
+        address hookAddress,
+        bool active,
+        uint256 bounty
+    );
+    function requestTarget(uint256 requestId) external view returns (address);
+    function requestTargetRedirect(address hookAddress) external view returns (address);
+    function getRequest(uint256 requestId)
+        external
+        view
+        returns (
+            address creator,
+            address synthetic,
+            address hookAddress,
+            bool active,
+            uint256 bounty,
+            string memory ipfs
+        );
 
     // owner / admin
     function transferOwnership(address newOwner) external;
@@ -47,6 +75,10 @@ interface IBonding {
 
     // publishers
     function recordFee(address target, address currency, uint256 amount) external payable;
+
+    // request flow
+    function requestHook(string calldata ipfs) external payable returns (uint256 requestId);
+    function activateRequest(uint256 requestId, address hookAddress) external;
 
     // claims and withdraws
     function claimRewards(address[] calldata targets, address[] calldata currencies) external;

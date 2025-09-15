@@ -27,9 +27,13 @@ contract PoolLaunchPad {
     IPoolManager public immutable manager;
     AccessControl public accessControl;
     
+    // Pool tracking added so front-end can enumerate pools created via this launchpad
+    PoolId[] private _pools;
+    mapping(PoolId => bool) private _poolExists;
+
     event TokenCreated(address indexed creator, address token);
     event PoolInitialized(address indexed creator, PoolId poolId);
-
+ 
     constructor(IPoolManager _manager, AccessControl _accessControl) {
         manager = _manager;
         accessControl = _accessControl;
@@ -176,9 +180,22 @@ contract PoolLaunchPad {
         // Register the caller (creator) as the pool admin in AccessControl
         // Use canonical PoolId instead of a keccak hash
         accessControl.setPoolAdmin(uint256(PoolId.unwrap(id)), msg.sender);
+
+        // Track pool so front-end can fetch all pools created by this launchpad
+        if (!_poolExists[id]) {
+            _pools.push(id);
+            _poolExists[id] = true;
+        }
+
         emit PoolInitialized(msg.sender, id);
     }
 
+
+    /// @notice Return all PoolIds created through this LaunchPad.
+    /// @dev Front-end can call this to enumerate pools; returns an array of PoolId (bytes32 wrapped type).
+    function allPools() external view returns (PoolId[] memory) {
+        return _pools;
+    }
 
     // Allow contract to receive ETH when seeding native pairs
     receive() external payable {}

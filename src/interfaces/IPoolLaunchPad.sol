@@ -53,5 +53,8 @@ interface IPoolLaunchPad {
         IHooks hooks
     ) external returns (PoolId poolId);
 
+    /// @notice Return all PoolIds created through this LaunchPad.
+    function allPools() external view returns (PoolId[] memory);
+
     receive() external payable;
 }

@@ -138,33 +138,83 @@ contract BondingTest is Test {
         // Ensure no bonders exist for fresh target2
         address target2 = address(0xCAFE);
         bonding.setAuthorizedPublisher(address(this), true);
-
+ 
         // Record fee when there are no bonders
         bonding.recordFee{value: 1 ether}(target2, address(0), 1 ether);
-
+ 
         uint256 unallocated = bonding.unallocatedFees(target2, address(0));
         assertEq(unallocated, 1 ether);
     }
-
+ 
     function test_authorized_withdrawer_can_withdraw_principal_native() public {
         // Alice deposits 2 ETH
         vm.prank(alice);
         bonding.depositBondNative{value: 2 ether}(target);
-
+ 
         // Authorize withdrawer
         address withdrawer = address(3);
         address recipient = address(4);
         bonding.setAuthorizedWithdrawer(withdrawer, true);
-
+ 
         // Withdraw 1 ETH of Alice's principal to recipient
         vm.prank(withdrawer);
         bonding.withdrawBondFrom(target, alice, address(0), 1 ether, recipient);
-
+ 
         // Recipient received 1 ETH
         assertEq(recipient.balance, 1 ether);
-
+ 
         // Alice's remaining bond should be 1 ETH
         uint256 remaining = bonding.bondedAmount(target, alice, address(0));
         assertEq(remaining, 1 ether);
+    }
+ 
+    // --- New tests for hook-request flow ---
+ 
+    function test_requestHook_creates_request_and_records_bounty() public {
+        // Alice creates a hook request with 1 ETH bounty
+        vm.prank(alice);
+        uint256 reqId = bonding.requestHook{value: 1 ether}("ipfs://QmRequest1");
+ 
+        // Verify request metadata via getRequest
+        (address creator, address synthetic, address hookAddr, bool active, uint256 bounty, string memory ipfs) =
+            bonding.getRequest(reqId);
+        assertEq(creator, alice);
+        assertEq(active, false);
+        assertEq(bounty, 1 ether);
+        assertEq(keccak256(bytes(ipfs)), keccak256(bytes("ipfs://QmRequest1")));
+        // Synthetic target should have recorded Alice's bond
+        uint256 total = bonding.totalBonded(synthetic, address(0));
+        assertEq(total, 1 ether);
+        uint256 aliceBond = bonding.bondedAmount(synthetic, alice, address(0));
+        assertEq(aliceBond, 1 ether);
+    }
+ 
+    function test_activation_redirect_and_fee_distribution() public {
+        // Create request by Alice with 1 ETH
+        vm.prank(alice);
+        uint256 reqId = bonding.requestHook{value: 1 ether}("ipfs://QmRequest2");
+        address synthetic = bonding.requestTarget(reqId);
+ 
+        // Bob adds 2 ETH to the synthetic target
+        vm.prank(bob);
+        bonding.depositBondNative{value: 2 ether}(synthetic);
+        assertEq(bonding.totalBonded(synthetic, address(0)), 3 ether);
+ 
+        // Enable publisher and activate the request mapping to a real hook address
+        bonding.setAuthorizedPublisher(address(this), true);
+        address hookAddress = address(0xD0C0);
+        bonding.activateRequest(reqId, hookAddress);
+ 
+        // Deposits using the hookAddress should resolve to the synthetic target
+        vm.prank(bob);
+        bonding.depositBondNative{value: 1 ether}(hookAddress);
+        assertEq(bonding.totalBonded(synthetic, address(0)), 4 ether);
+ 
+        // Record a fee to the hook address (publisher). It should distribute across synthetic bonders.
+        bonding.recordFee{value: 1 ether}(hookAddress, address(0), 1 ether);
+ 
+        // Alice had 1 ETH of 4 ETH total => should be entitled to 0.25 ETH
+        uint256 pendingAlice = bonding.pendingReward(hookAddress, alice, address(0));
+        assertEq(pendingAlice, 250000000000000000); // 0.25 ether
     }
 }

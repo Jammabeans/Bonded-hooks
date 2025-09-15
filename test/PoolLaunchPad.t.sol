@@ -102,15 +102,54 @@ contract PoolLaunchPadTest is Test, Deployers {
             1 << 96,
             IHooks(address(0))
         );
-
+ 
         address currency0Addr = address(a);
         address currency1Addr = address(b);
         (address c0, address c1) = currency0Addr == currency1Addr ? (currency0Addr, currency1Addr) : (currency0Addr < currency1Addr ? (currency0Addr, currency1Addr) : (currency1Addr, currency0Addr));
         PoolKey memory expectedKey = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, IHooks(address(0)));
-
+ 
         assert(PoolId.unwrap(pid) == PoolId.unwrap(expectedKey.toId()));
-
+ 
         uint256 pidUint2 = uint256(PoolId.unwrap(pid));
         assert(accessControl.getPoolAdmin(pidUint2) == address(this));
+    }
+
+    function test_allPools_returnsCreatedPools() public {
+        (PoolId pid1, address token1) = launchpad.createNewTokenAndInitWithNative(
+            "P1",
+            "P1",
+            1000 ether,
+            3000,
+            60,
+            1 << 96,
+            IHooks(address(0))
+        );
+
+        (PoolId pid2, address token2) = launchpad.createNewTokenAndInitWithNative(
+            "P2",
+            "P2",
+            1000 ether,
+            3000,
+            60,
+            1 << 96,
+            IHooks(address(0))
+        );
+
+        (PoolId pid3, address token3) = launchpad.createNewTokenAndInitWithNative(
+            "P3",
+            "P3",
+            1000 ether,
+            3000,
+            60,
+            1 << 96,
+            IHooks(address(0))
+        );
+
+        PoolId[] memory pools = launchpad.allPools();
+        assert(pools.length == 3);
+
+        assert(PoolId.unwrap(pools[0]) == PoolId.unwrap(pid1));
+        assert(PoolId.unwrap(pools[1]) == PoolId.unwrap(pid2));
+        assert(PoolId.unwrap(pools[2]) == PoolId.unwrap(pid3));
     }
 }

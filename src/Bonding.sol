@@ -59,6 +59,26 @@ contract Bonding {
     // Note: limited to 3 indexed params per event
     event BondWithdrawnByAuthorized(address indexed target, address indexed user, address indexed currency, uint256 amount, address to);
 
+    // Hook request events + storage
+    event HookRequested(uint256 indexed requestId, address indexed creator, address syntheticTarget, string ipfs);
+    event HookActivated(uint256 indexed requestId, address indexed hookAddress);
+
+    struct Request {
+        address creator;
+        string ipfs;
+        address synthetic;
+        address hookAddress;
+        bool active;
+        uint256 bounty;
+    }
+
+    // requestId => Request
+    mapping(uint256 => Request) public requests;
+    // monotonic request id counter
+    uint256 public nextRequestId;
+    // redirect mapping: hookAddress => syntheticTarget
+    mapping(address => address) public requestTargetRedirect;
+
     // Reentrancy guard
     uint256 private _locked = 1;
     modifier nonReentrant() {
@@ -118,19 +138,21 @@ contract Bonding {
     }
 
     // View helpers
-
+ 
     /// @notice Return bonded amount for a user under a specific target and currency
     function bondedAmount(address target, address user, address currency) external view returns (uint256) {
-        return _bondedAmount[target][user][currency];
+        address t = _resolveTarget(target);
+        return _bondedAmount[t][user][currency];
     }
     
     /// @notice View pending reward for user for a target/currency
     function pendingReward(address target, address user, address currency) external view returns (uint256) {
-        uint256 userAmount = _bondedAmount[target][user][currency];
+        address t = _resolveTarget(target);
+        uint256 userAmount = _bondedAmount[t][user][currency];
         if (userAmount == 0) return 0;
-        uint256 rps = rewardsPerShare[target][currency];
+        uint256 rps = rewardsPerShare[t][currency];
         uint256 accrued = (userAmount * rps) / PRECISION;
-        uint256 debt = _rewardDebt[target][user][currency];
+        uint256 debt = _rewardDebt[t][user][currency];
         if (accrued <= debt) return 0;
         return accrued - debt;
     }
@@ -140,9 +162,10 @@ contract Bonding {
     /// @param currencies Array of currency addresses to query (use address(0) for native)
     /// @return totals Array of totalBonded values matched to the currencies array
     function getTargetTotals(address target, address[] calldata currencies) external view returns (uint256[] memory totals) {
+        address t = _resolveTarget(target);
         totals = new uint256[](currencies.length);
         for (uint256 i = 0; i < currencies.length; i++) {
-            totals[i] = totalBonded[target][currencies[i]];
+            totals[i] = totalBonded[t][currencies[i]];
         }
     }
     
@@ -157,20 +180,21 @@ contract Bonding {
         view
         returns (uint256[] memory principals, uint256[] memory pendings)
     {
+        address t = _resolveTarget(target);
         uint256 len = currencies.length;
         principals = new uint256[](len);
         pendings = new uint256[](len);
         for (uint256 i = 0; i < len; i++) {
             address currency = currencies[i];
-            uint256 userAmount = _bondedAmount[target][user][currency];
+            uint256 userAmount = _bondedAmount[t][user][currency];
             principals[i] = userAmount;
             if (userAmount == 0) {
                 pendings[i] = 0;
                 continue;
             }
-            uint256 rps = rewardsPerShare[target][currency];
+            uint256 rps = rewardsPerShare[t][currency];
             uint256 accrued = (userAmount * rps) / PRECISION;
-            uint256 debt = _rewardDebt[target][user][currency];
+            uint256 debt = _rewardDebt[t][user][currency];
             if (accrued <= debt) {
                 pendings[i] = 0;
             } else {
@@ -179,15 +203,38 @@ contract Bonding {
         }
     }
 
+    /// @notice Return the synthetic target address for a requestId
+    function requestTarget(uint256 requestId) external view returns (address) {
+        return requests[requestId].synthetic;
+    }
+
+    /// @notice Return request metadata
+    function getRequest(uint256 requestId)
+        external
+        view
+        returns (
+            address creator,
+            address synthetic,
+            address hookAddress,
+            bool active,
+            uint256 bounty,
+            string memory ipfs
+        )
+    {
+        Request storage r = requests[requestId];
+        return (r.creator, r.synthetic, r.hookAddress, r.active, r.bounty, r.ipfs);
+    }
+
     // --- Deposits (users deposit bonds) ---
     /// @notice Deposit native ETH as bond for target
     /// @param target The command/target contract address the bond is for
     function depositBondNative(address target) external payable nonReentrant {
         require(msg.value > 0, "Bonding: zero deposit");
-        _deposit(msg.sender, target, address(0), msg.value);
-        emit BondDeposited(target, msg.sender, address(0), msg.value);
+        address t = _resolveTarget(target);
+        _deposit(msg.sender, t, address(0), msg.value);
+        emit BondDeposited(t, msg.sender, address(0), msg.value);
     }
-
+ 
     /// @notice Deposit ERC20 tokens as bond for target
     /// @param target The command/target contract address the bond is for
     /// @param currency ERC20 token address (non-zero)
@@ -197,8 +244,9 @@ contract Bonding {
         require(amount > 0, "Bonding: zero deposit");
         // Transfer tokens from depositor into this contract
         _safeTransferFrom(currency, msg.sender, address(this), amount);
-        _deposit(msg.sender, target, currency, amount);
-        emit BondDeposited(target, msg.sender, currency, amount);
+        address t = _resolveTarget(target);
+        _deposit(msg.sender, t, currency, amount);
+        emit BondDeposited(t, msg.sender, currency, amount);
     }
 
     // Internal deposit bookkeeping
@@ -216,7 +264,7 @@ contract Bonding {
         _rewardDebt[target][user][currency] = (newAmount * currentRPS) / PRECISION;
     }
 
-    // --- Publishers push fees to be distributed to bonders --- 
+    // --- Publishers push fees to be distributed to bonders ---
     /// @notice Record a fee for a target/currency. For native, sender must send ETH equal to amount.
     ///         For ERC20, this function will attempt to pull tokens from the caller (so caller must approve).
     /// @param target The command/target address the fee belongs to
@@ -231,18 +279,19 @@ contract Bonding {
             _safeTransferFrom(currency, msg.sender, address(this), amount);
         }
 
-        uint256 total = totalBonded[target][currency];
+        address t = _resolveTarget(target);
+        uint256 total = totalBonded[t][currency];
         if (total == 0) {
             // No bonders for this target/currency — retain as unallocated
-            unallocatedFees[target][currency] += amount;
-            emit FeeRecorded(target, currency, amount);
+            unallocatedFees[t][currency] += amount;
+            emit FeeRecorded(t, currency, amount);
             return;
         }
 
         // Add to rewardsPerShare: amount * PRECISION / total
         uint256 addition = (amount * PRECISION) / total;
-        rewardsPerShare[target][currency] += addition;
-        emit FeeRecorded(target, currency, amount);
+        rewardsPerShare[t][currency] += addition;
+        emit FeeRecorded(t, currency, amount);
     }
 
     // --- Claim rewards ---
@@ -252,7 +301,8 @@ contract Bonding {
     function claimRewards(address[] calldata targets, address[] calldata currencies) external nonReentrant {
         require(targets.length == currencies.length, "Bonding: length mismatch");
         for (uint256 i = 0; i < targets.length; i++) {
-            _claimOne(targets[i], currencies[i], msg.sender);
+            address t = _resolveTarget(targets[i]);
+            _claimOne(t, currencies[i], msg.sender);
         }
     }
 
@@ -294,24 +344,25 @@ contract Bonding {
     /// @param to Recipient of withdrawn funds
     function withdrawBondFrom(address target, address user, address currency, uint256 amount, address to) external nonReentrant onlyWithdrawer {
         require(amount > 0, "Bonding: zero withdraw");
-        uint256 userAmount = _bondedAmount[target][user][currency];
+        address t = _resolveTarget(target);
+        uint256 userAmount = _bondedAmount[t][user][currency];
         require(userAmount >= amount, "Bonding: insufficient bonded");
         // Reduce principal and totalBonded
         uint256 newUserAmount = userAmount - amount;
-        _bondedAmount[target][user][currency] = newUserAmount;
-        totalBonded[target][currency] -= amount;
-
+        _bondedAmount[t][user][currency] = newUserAmount;
+        totalBonded[t][currency] -= amount;
+ 
         // Adjust user's rewardDebt to reflect the smaller principal:
-        uint256 rps = rewardsPerShare[target][currency];
-        _rewardDebt[target][user][currency] = (newUserAmount * rps) / PRECISION;
-
+        uint256 rps = rewardsPerShare[t][currency];
+        _rewardDebt[t][user][currency] = (newUserAmount * rps) / PRECISION;
+ 
         // Transfer funds to `to`
         if (currency == address(0)) {
             _safeNativeTransfer(to, amount);
         } else {
             _safeTransfer(currency, to, amount);
         }
-        emit BondWithdrawnByAuthorized(target, user, currency, amount, to);
+        emit BondWithdrawnByAuthorized(t, user, currency, amount, to);
     }
 
     // --- Utilities: safe transfers ---
@@ -323,6 +374,43 @@ contract Bonding {
             return accessControl.hasRole(ROLE_BONDING_ADMIN, user);
         }
         return user == owner;
+    }
+
+    /// @notice Resolve a target address to the canonical synthetic target (if a hook was activated).
+    /// If a hookAddress was activated for a request, requestTargetRedirect[hookAddress] => syntheticTarget
+    /// so callers using the hookAddress will resolve to the synthetic storage where bonds were recorded.
+    function _resolveTarget(address target) internal view returns (address) {
+        address redirected = requestTargetRedirect[target];
+        if (redirected != address(0)) return redirected;
+        return target;
+    }
+
+    /// @notice Create a hook request with an IPFS link. Caller must send ETH as the initial bounty/bond.
+    /// @param ipfs The IPFS string describing the hook request
+    /// @return requestId Newly created request id
+    function requestHook(string calldata ipfs) external payable nonReentrant returns (uint256 requestId) {
+        require(msg.value > 0, "Bonding: zero request");
+        requestId = ++nextRequestId;
+        address synthetic = address(uint160(uint256(keccak256(abi.encodePacked(address(this), requestId)))));
+        requests[requestId] = Request({creator: msg.sender, ipfs: ipfs, synthetic: synthetic, hookAddress: address(0), active: false, bounty: msg.value});
+        // Record sender as a bonder on the synthetic target (msg.value already received)
+        _deposit(msg.sender, synthetic, address(0), msg.value);
+        emit HookRequested(requestId, msg.sender, synthetic, ipfs);
+        emit BondDeposited(synthetic, msg.sender, address(0), msg.value);
+    }
+
+    /// @notice Activate a request by mapping the provided hookAddress to the request's synthetic target.
+    /// Only publishers may call this to declare the request fulfilled and "active".
+    function activateRequest(uint256 requestId, address hookAddress) external onlyPublisher {
+        Request storage r = requests[requestId];
+        require(r.creator != address(0), "Bonding: bad request");
+        require(!r.active, "Bonding: already active");
+        require(hookAddress != address(0), "Bonding: zero hook");
+        r.active = true;
+        r.hookAddress = hookAddress;
+        // Map hookAddress to the synthetic target so future calls using hookAddress resolve to synthetic storage
+        requestTargetRedirect[hookAddress] = r.synthetic;
+        emit HookActivated(requestId, hookAddress);
     }
  
     function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
