@@ -2,7 +2,7 @@
   "name": "bonded-hooks-operator",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "scripts": {
     "start": "ts-node ./DegenAVS.ts",
     "build": "tsc --project ./tsconfig.json",
