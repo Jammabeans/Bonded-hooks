@@ -77,3 +77,57 @@ Trigger a sample PoolRebateReady event manually
 - Example using cast:
   cast send --private-key <ANVIL_PRIVATE_KEY> <MASTER_CONTROL_ADDRESS> "emitPoolRebateReady(address,address,uint256,uint256,uint256)" "0x0000000000000000000000000000000000000001" "0x0000000000000000000000000000000000000002" 1 100 1000000000 --rpc-url http://127.0.0.1:8545
 
+
+## Shaker AVS (automated Shaker rounds & PrizeBox awarding)
+
+A second AVS is included to automate Shaker rounds and PrizeBox awarding. It runs as a small runtime process that:
+- periodically starts a Shaker round on a selected pool,
+- waits for the round deadline (plus a small buffer),
+- calls `finalizeRound(roundId, boxIds, seed)` to distribute prizeBox funds,
+- queries `PrizeBox` balances and deterministically selects a box to award,
+- calls `awardWinnerBox(roundId, boxId)`.
+
+Key operator files for the Shaker AVS
+- Runtime AVS: [`Bonded-hooks/operator/ShakerAVS.ts:1`](Bonded-hooks/operator/ShakerAVS.ts:1)
+- Pure helpers: [`Bonded-hooks/operator/shakerProcessor.ts:1`](Bonded-hooks/operator/shakerProcessor.ts:1)
+- Tests: [`Bonded-hooks/operator/__tests__/shakerProcessor.test.ts:1`](Bonded-hooks/operator/__tests__/shakerProcessor.test.ts:1)
+
+Environment variables used by the Shaker AVS
+- `RPC_URL` (required) — JSON-RPC endpoint (e.g. http://127.0.0.1:8545)
+- `PRIVATE_KEY` (required) — private key of the AVS account (must be authorized in Shaker via `setAVS`)
+- `SHAKER_ADDRESS` (required) — deployed Shaker contract address
+- `PRIZEBOX_ADDRESS` (optional but recommended) — deployed PrizeBox contract address
+- `CANDIDATE_POOLS` (required for auto-start) — comma-separated pool ids (e.g. `1,2,3`)
+- `CANDIDATE_BOXES` (required for finalize/award) — comma-separated box ids (e.g. `1,2,3,4`)
+- `MIN_INTERVAL_SECONDS` (default 30) — minimum wait between starting rounds
+- `MAX_INTERVAL_SECONDS` (default 120) — maximum wait between starting rounds
+- `BOXES_PER_ROUND` (default 1) — how many boxIds to include in finalizeRound per round
+- `FINALIZE_BUFFER_SECONDS` (default 5) — extra seconds to wait beyond round deadline before finalizing
+- `DRY_RUN` (set to `1`) — when present, the runtime will not send on-chain transactions and will only log actions
+
+Example quick dry-run
+1) Export env vars (example):
+   ```
+   export RPC_URL=http://127.0.0.1:8545
+   export PRIVATE_KEY=<ANVIL_PRIVATE_KEY>
+   export SHAKER_ADDRESS=<Shaker address>
+   export PRIZEBOX_ADDRESS=<PrizeBox address>
+   export CANDIDATE_POOLS=1,2
+   export CANDIDATE_BOXES=1,2,3
+   export MIN_INTERVAL_SECONDS=30
+   export MAX_INTERVAL_SECONDS=60
+   export BOXES_PER_ROUND=1
+   export FINALIZE_BUFFER_SECONDS=5
+   export DRY_RUN=1
+   ```
+
+2) Install/build and run (operator dir):
+   - npm ci
+   - npm run build
+   - node dist/ShakerAVS.js
+
+Notes and recommendations
+- Ensure the AVS account (PRIVATE_KEY) is authorized in the on-chain Shaker contract via `setAVS(...)`.
+- The Shaker AVS uses deterministic seed-based selection helpers in [`Bonded-hooks/operator/shakerProcessor.ts:1`](Bonded-hooks/operator/shakerProcessor.ts:1) so behavior can be reproduced for testing if a fixed seed is provided.
+- For integration testing, run the repository's `integration/run-full-local.sh` helper which deploys the system with anvil and can be used alongside the operator scripts.
+- Add or tune candidate pools/boxes and intervals to control frequency and scope of automated rounds.
