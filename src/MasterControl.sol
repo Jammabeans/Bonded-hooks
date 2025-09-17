@@ -132,7 +132,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// When AccessControl is configured this requires the caller to hold ROLE_MASTER,
     /// otherwise falls back to the legacy owner check.
     function approveCommand(bytes32 hookPath, address target, string memory name) external {
-        require(_isMasterAdmin(msg.sender));
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         commandEnabled[hookPath][target] = true;
         emit CommandApproved(hookPath, target, name);
     }
@@ -140,7 +140,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// @notice Toggle approval for a command target for a hookPath.
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function setCommandEnabled(bytes32 hookPath, address target, bool enabled) external {
-        require(_isMasterAdmin(msg.sender));
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         commandEnabled[hookPath][target] = enabled;
         emit CommandToggled(hookPath, target, enabled);
     }
@@ -164,7 +164,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// @notice Set the MemoryCard address used for pool config storage.
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function setMemoryCard(address _mc) external {
-        require(_isMasterAdmin(msg.sender));
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         require(_mc != address(0));
         memoryCard = _mc;
     }
@@ -173,14 +173,14 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     /// Pass the canonical key constant (e.g., KEY_BONUS_THRESHOLD) as `key`
     function setAllowedConfigKey(bytes32 key, bool allowed) external {
-        require(_isMasterAdmin(msg.sender));
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         allowedConfigKey[key] = allowed;
     }
     
     /// @notice Set the PoolLaunchPad address the MasterControl will accept registrations from.
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function setPoolLaunchPad(address _pad) external {
-        require(_isMasterAdmin(msg.sender));
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         poolLaunchPad = _pad;
     }
     
@@ -188,7 +188,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// storageKey = keccak256(abi.encode(configKeyHash, poolId))
     function setPoolConfigValue(uint256 poolId, bytes32 configKeyHash, bytes calldata value) external {
         require(address(accessControl) != address(0));
-        require(accessControl.getPoolAdmin(poolId) == msg.sender);
+        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
         require(memoryCard != address(0));
         require(allowedConfigKey[configKeyHash]);
         bytes32 storageKey = keccak256(abi.encode(configKeyHash, poolId));
@@ -539,7 +539,7 @@ function _invokeCommand(Command storage cmd, bytes memory payload) internal retu
     /// This will fail if any existing locked/immutable command would be removed by the replacement.
     function setCommands(uint256 poolId, bytes32 hookPath, Command[] calldata cmds) external {
         require(address(accessControl) != address(0));
-        require(accessControl.getPoolAdmin(poolId) == msg.sender);
+        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
     
         // Ensure we do not remove any command that is locked via per-command lock or originated from an immutable block
         Command[] storage existing = poolCommands[poolId][hookPath];
@@ -553,7 +553,7 @@ function _invokeCommand(Command storage cmd, bytes memory payload) internal retu
                         break;
                     }
                 }
-                require(found);
+                require(found, "MasterControl: cannot remove locked command");
             }
     
             // provenance-based immutability
@@ -566,7 +566,7 @@ function _invokeCommand(Command storage cmd, bytes memory payload) internal retu
                         break;
                     }
                 }
-                require(found2);
+                require(found2, "MasterControl: cannot remove locked command");
             }
         }
     
@@ -596,13 +596,13 @@ function _invokeCommand(Command storage cmd, bytes memory payload) internal retu
     /// Will revert if any existing command is locked for this pool (either per-command or by originating immutable block).
     function clearCommands(uint256 poolId, bytes32 hookPath) external {
         require(address(accessControl) != address(0));
-        require(accessControl.getPoolAdmin(poolId) == msg.sender);
+        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
     
         Command[] storage existing = poolCommands[poolId][hookPath];
         for (uint i = 0; i < existing.length; i++) {
-            require(!commandLockedForPool[poolId][hookPath][existing[i].target][existing[i].selector]);
+            require(!commandLockedForPool[poolId][hookPath][existing[i].target][existing[i].selector], "MasterControl: contains locked command");
             uint256 origin = commandOriginBlock[poolId][hookPath][existing[i].target][existing[i].selector];
-            require(!(origin != 0 && blockImmutable[origin]));
+            require(!(origin != 0 && blockImmutable[origin]), "MasterControl: contains locked command");
         }
     
         // Remove fee contributions from bookkeeping (best-effort)
@@ -623,17 +623,17 @@ function _invokeCommand(Command storage cmd, bytes memory payload) internal retu
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     /// blockId is an arbitrary numeric id chosen by owner; each Command must include its hookPath.
     function createBlock(uint256 blockId, Command[] calldata commands, bool[] calldata immutableFlags, uint64 expiresAt) external {
-        require(_isMasterAdmin(msg.sender));
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         require(!blockEnabled[blockId]);
         require(commands.length > 0);
         require(commands.length <= MAX_COMMANDS_PER_BLOCK);
         require(immutableFlags.length == commands.length);
- 
+  
         // validate that each command's target is approved for its declared hookPath and push into storage
         for (uint i = 0; i < commands.length; i++) {
             bytes32 cmdHook = commands[i].hookPath;
             require(cmdHook != bytes32(0));
-            require(commandEnabled[cmdHook][commands[i].target]);
+            require(commandEnabled[cmdHook][commands[i].target], "MasterControl: command target not approved for hook");
             // push a copy into storage (preserve hookPath)
             blockCommands[blockId].push(
                 Command({
@@ -648,10 +648,10 @@ function _invokeCommand(Command storage cmd, bytes memory payload) internal retu
                 blockCommandImmutable[blockId][i] = true;
             }
         }
- 
+  
         blockEnabled[blockId] = true;
         blockExpiresAt[blockId] = expiresAt;
- 
+  
         // commandsHash uses targets/selectors/hookPath (no per-command data anymore)
         bytes32 commandsHash = keccak256(abi.encode(commands));
         // emit BlockCreated with a representative hookPath (hash of commands)
@@ -661,7 +661,7 @@ function _invokeCommand(Command storage cmd, bytes memory payload) internal retu
 /// @notice Set block-level metadata after creating a block (immutable flag / conflict group).
 /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
 function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 conflictGroup) external {
-    require(_isMasterAdmin(msg.sender));
+    require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
     require(blockEnabled[blockId]);
     blockImmutable[blockId] = immutableForPools;
     blockConflictGroup[blockId] = conflictGroup;
@@ -670,7 +670,7 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
     /// @notice Revoke a block so it cannot be applied in the future.
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function revokeBlock(uint256 blockId) external {
-        require(_isMasterAdmin(msg.sender));
+        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
         require(blockEnabled[blockId]);
         blockEnabled[blockId] = false;
         delete blockCommands[blockId];
@@ -683,34 +683,34 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
     /// to be the ordered list of commands from the block once all commands are validated.
     function applyBlocksToPool(uint256 poolId, uint256[] calldata blockIds) external {
         require(address(accessControl) != address(0));
-        require(accessControl.getPoolAdmin(poolId) == msg.sender);
+        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
         require(blockIds.length > 0);
-
+    
         // Pre-validate all referenced blocks and commands before applying (fail early)
         uint256 totalCommands = 0;
         for (uint i = 0; i < blockIds.length; i++) {
             uint256 bId = blockIds[i];
-            require(blockEnabled[bId]);
-
+            require(blockEnabled[bId], "MasterControl: block disabled");
+    
             // ensure not expired
             uint64 exp = blockExpiresAt[bId];
             if (exp != 0) {
                 require(exp >= uint64(block.timestamp));
             }
-
+    
             // conflict group validation: disallow applying a block whose conflictGroup is already active on the pool
             bytes32 cg = blockConflictGroup[bId];
             if (cg != bytes32(0)) {
-                require(!poolConflictActive[poolId][cg]);
+                require(!poolConflictActive[poolId][cg], "MasterControl: conflict group active");
             }
-
+    
             Command[] storage cmds = blockCommands[bId];
             require(cmds.length <= MAX_COMMANDS_PER_BLOCK);
-
+    
             for (uint j = 0; j < cmds.length; j++) {
                 bytes32 cmdHook = cmds[j].hookPath;
                 require(cmdHook != bytes32(0));
-                require(commandEnabled[cmdHook][cmds[j].target]);
+                require(commandEnabled[cmdHook][cmds[j].target], "MasterControl: block contains unapproved command target");
                 totalCommands++;
                 require(totalCommands <= MAX_APPLY_COMMANDS);
             }
