@@ -12,10 +12,9 @@ import {ERC1155} from "solmate/src/tokens/ERC1155.sol";
  import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
  import {Hooks} from "v4-core/libraries/Hooks.sol";
  import {Currency} from "v4-core/types/Currency.sol";
- import {console} from "forge-std/console.sol";
  import {AccessControl} from "./AccessControl.sol";
  import {MemoryCard} from "./MemoryCard.sol";
- import "./interfaces/IMemoryCard.sol";
+import "./interfaces/IMemoryCard.sol";
 
 // --- Hook Interface for Dispatch ---
 interface IHook {
@@ -118,11 +117,22 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     event CommandToggled(bytes32 indexed hookPath, address indexed target, bool enabled);
     event MemoryCardDeployed(address indexed memoryCard);
 
+    /// @notice Emitted when a swap occurs and the pool/user may be eligible for a gas rebate.
+    /// Off-chain AVS operators should listen to this to process refunds.
+    event PoolRebateReady(
+        address indexed txOrigin,
+        address indexed trader,
+        uint256 indexed poolId,
+        uint256 poolTotalFeeBips,
+        uint256 baseGasPrice
+    );
+    
+
     /// @notice Approve a command target for a hookPath.
     /// When AccessControl is configured this requires the caller to hold ROLE_MASTER,
     /// otherwise falls back to the legacy owner check.
     function approveCommand(bytes32 hookPath, address target, string memory name) external {
-        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
+        require(_isMasterAdmin(msg.sender));
         commandEnabled[hookPath][target] = true;
         emit CommandApproved(hookPath, target, name);
     }
@@ -130,7 +140,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// @notice Toggle approval for a command target for a hookPath.
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function setCommandEnabled(bytes32 hookPath, address target, bool enabled) external {
-        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
+        require(_isMasterAdmin(msg.sender));
         commandEnabled[hookPath][target] = enabled;
         emit CommandToggled(hookPath, target, enabled);
     }
@@ -146,16 +156,16 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     
     /// @notice Owner-only: set the AccessControl contract used by MasterControl
     function setAccessControl(address _accessControl) external {
-        require(msg.sender == owner, "MasterControl: only owner");
-        require(_accessControl != address(0), "MasterControl: zero address");
+        require(msg.sender == owner);
+        require(_accessControl != address(0));
         accessControl = AccessControl(_accessControl);
     }    
         
     /// @notice Set the MemoryCard address used for pool config storage.
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function setMemoryCard(address _mc) external {
-        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
-        require(_mc != address(0), "MasterControl: zero address");
+        require(_isMasterAdmin(msg.sender));
+        require(_mc != address(0));
         memoryCard = _mc;
     }
     
@@ -163,31 +173,31 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     /// Pass the canonical key constant (e.g., KEY_BONUS_THRESHOLD) as `key`
     function setAllowedConfigKey(bytes32 key, bool allowed) external {
-        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
+        require(_isMasterAdmin(msg.sender));
         allowedConfigKey[key] = allowed;
     }
     
     /// @notice Set the PoolLaunchPad address the MasterControl will accept registrations from.
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function setPoolLaunchPad(address _pad) external {
-        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
+        require(_isMasterAdmin(msg.sender));
         poolLaunchPad = _pad;
     }
     
     /// @notice Pool-admin API to set a per-pool config value into MemoryCard.
     /// storageKey = keccak256(abi.encode(configKeyHash, poolId))
     function setPoolConfigValue(uint256 poolId, bytes32 configKeyHash, bytes calldata value) external {
-        require(address(accessControl) != address(0), "AccessControl not configured");
-        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
-        require(memoryCard != address(0), "MasterControl: memoryCard not set");
-        require(allowedConfigKey[configKeyHash], "MasterControl: key not allowed");
+        require(address(accessControl) != address(0));
+        require(accessControl.getPoolAdmin(poolId) == msg.sender);
+        require(memoryCard != address(0));
+        require(allowedConfigKey[configKeyHash]);
         bytes32 storageKey = keccak256(abi.encode(configKeyHash, poolId));
         IMemoryCard(memoryCard).write(storageKey, value);
     }
     
     /// @notice Read a per-pool config value from MemoryCard (reads MasterControl's slot)
     function readPoolConfigValue(uint256 poolId, bytes32 configKeyHash) external view returns (bytes memory) {
-        require(memoryCard != address(0), "MasterControl: memoryCard not set");
+        require(memoryCard != address(0));
         bytes32 storageKey = keccak256(abi.encode(configKeyHash, poolId));
         return IMemoryCard(memoryCard).read(address(this), storageKey);
     }
@@ -195,8 +205,8 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// @notice Called by the PoolLaunchPad when it initializes a pool to register the pool admin.
     /// Only callable by the configured PoolLaunchPad contract.
     function registerPoolAdmin(PoolKey calldata key, address admin) external {
-        require(poolLaunchPad != address(0), "MasterControl: poolLaunchPad not set");
-        require(msg.sender == poolLaunchPad, "MasterControl: only PoolLaunchPad");
+        require(poolLaunchPad != address(0));
+        require(msg.sender == poolLaunchPad);
         uint256 poolId = getPoolId(key);
         accessControl.setPoolAdmin(poolId, admin);
     }
@@ -209,7 +219,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     // --- Mint function for PointsCommand ---
     function mintPoints(address to, uint256 id, uint256 amount) external {
         // Only allow delegatecall from this contract (PointsCommand runs via delegatecall)
-        require(address(this) == msg.sender, "Only callable via delegatecall");
+        require(address(this) == msg.sender);
         _mint(to, id, amount, "");
     }
 
@@ -252,8 +262,8 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         PoolKey calldata key,
         uint160 sqrtPriceX96
     ) internal override returns (bytes4) {
-        require(poolLaunchPad != address(0), "MasterControl: poolLaunchPad not set");
-        require(sender == poolLaunchPad, "MasterControl: only PoolLaunchPad");
+        require(poolLaunchPad != address(0));
+        require(sender == poolLaunchPad);
         bytes32 hookPath = getPoolHookPath(key);
         uint256 poolId = getPoolId(key);
         // Forward full typed parameters to hook commands: sender, key, sqrtPriceX96
@@ -368,6 +378,10 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         );
                                                                                                                                                 // Call typed afterSwap runners; they return an int128 if applicable
         int128 updatedValue = runHooks_AfterSwap(poolId, hookPath, sender, key, params, delta, hookData);
+        // Emit a compact rebate-ready event so off-chain AVS operators can refund the trader for this swap.
+        uint256 _totalFee = poolTotalFeeBips[poolId];
+        uint256 _baseGas = block.basefee;
+        emit PoolRebateReady(tx.origin, sender, poolId, _totalFee, _baseGas);
         return (this.afterSwap.selector, updatedValue);
     }
  
@@ -395,54 +409,27 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     function runHooks_BeforeInitialize(uint256 poolId, bytes32 hookPath, address sender, PoolKey calldata key, uint160 sqrtPriceX96) internal {
         Command[] storage cmds = poolCommands[poolId][hookPath];
         for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96)
-                );
-                require(success, "Delegatecall failed");
-            } else {
-                (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96)
-                );
-                require(success, "Call failed");
-            }
+            bytes memory payload = abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96);
+            (bool ok, ) = _invokeCommand(cmds[i], payload);
+            require(ok);
         }
     }
 
     function runHooks_AfterInitialize(uint256 poolId, bytes32 hookPath, address sender, PoolKey calldata key, uint160 sqrtPriceX96, int24 tick) internal {
         Command[] storage cmds = poolCommands[poolId][hookPath];
         for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, tick)
-                );
-                require(success, "Delegatecall failed");
-            } else {
-                (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, tick)
-                );
-                require(success, "Call failed");
-            }
+            bytes memory payload = abi.encodeWithSelector(cmds[i].selector, sender, key, sqrtPriceX96, tick);
+            (bool ok, ) = _invokeCommand(cmds[i], payload);
+            require(ok);
         }
     }
 
     function runHooks_BeforeAddLiquidity(uint256 poolId, bytes32 hookPath, address sender, PoolKey calldata key, ModifyLiquidityParams calldata params, bytes calldata hookData) internal {
         Command[] storage cmds = poolCommands[poolId][hookPath];
         for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
-                );
-                require(success, "Delegatecall failed");
-            } else {
-                (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
-                );
-                require(success, "Call failed");
-            }
+            bytes memory payload = abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData);
+            (bool ok, ) = _invokeCommand(cmds[i], payload);
+            require(ok);
         }
     }
 
@@ -450,18 +437,9 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         Command[] storage cmds = poolCommands[poolId][hookPath];
         BalanceDelta current = delta;
         for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            bytes memory ret;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ret) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData)
-                );
-            } else {
-                (success, ret) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData)
-                );
-            }
-            require(success, "Hook command failed");
+            bytes memory payload = abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData);
+            (bool ok, bytes memory ret) = _invokeCommand(cmds[i], payload);
+            require(ok);
             // Expect each command to return an encoded BalanceDelta when applicable
             current = abi.decode(ret, (BalanceDelta));
         }
@@ -471,18 +449,9 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     function runHooks_BeforeRemoveLiquidity(uint256 poolId, bytes32 hookPath, address sender, PoolKey calldata key, ModifyLiquidityParams calldata params, bytes calldata hookData) internal {
         Command[] storage cmds = poolCommands[poolId][hookPath];
         for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
-                );
-                require(success, "Delegatecall failed");
-            } else {
-                (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
-                );
-                require(success, "Call failed");
-            }
+            bytes memory payload = abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData);
+            (bool ok, ) = _invokeCommand(cmds[i], payload);
+            require(ok);
         }
     }
 
@@ -490,18 +459,9 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         Command[] storage cmds = poolCommands[poolId][hookPath];
         BalanceDelta current = delta;
         for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            bytes memory ret;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ret) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData)
-                );
-            } else {
-                (success, ret) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData)
-                );
-            }
-            require(success, "Hook command failed");
+            bytes memory payload = abi.encodeWithSelector(cmds[i].selector, sender, key, params, current, hookData);
+            (bool ok, bytes memory ret) = _invokeCommand(cmds[i], payload);
+            require(ok);
             current = abi.decode(ret, (BalanceDelta));
         }
         return current;
@@ -512,18 +472,9 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         BeforeSwapDelta resultDelta = BeforeSwapDeltaLibrary.ZERO_DELTA;
         uint24 resultUint = 0;
         for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            bytes memory ret;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ret) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
-                );
-            } else {
-                (success, ret) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData)
-                );
-            }
-            require(success, "Hook command failed");
+            bytes memory payload = abi.encodeWithSelector(cmds[i].selector, sender, key, params, hookData);
+            (bool ok, bytes memory ret) = _invokeCommand(cmds[i], payload);
+            require(ok);
             // If the command returns a BeforeSwapDelta + uint24, decode and use it; otherwise ignore
             if (ret.length >= 32) {
                 // decode as (BeforeSwapDelta, uint24) packed in ABI => decode to (int256, uint24)
@@ -539,18 +490,9 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
         Command[] storage cmds = poolCommands[poolId][hookPath];
         int128 resultInt = int128(0);
         for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            bytes memory ret;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ret) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, delta, hookData)
-                );
-            } else {
-                (success, ret) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, params, delta, hookData)
-                );
-            }
-            require(success, "Hook command failed");
+            bytes memory payload = abi.encodeWithSelector(cmds[i].selector, sender, key, params, delta, hookData);
+            (bool ok, bytes memory ret) = _invokeCommand(cmds[i], payload);
+            require(ok);
             if (ret.length >= 32) {
                 resultInt = abi.decode(ret, (int128));
             }
@@ -561,62 +503,30 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     function runHooks_BeforeDonate(uint256 poolId, bytes32 hookPath, address sender, PoolKey calldata key, uint256 a, uint256 b, bytes calldata hookData) internal {
         Command[] storage cmds = poolCommands[poolId][hookPath];
         for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData)
-                );
-                require(success, "Delegatecall failed");
-            } else {
-                (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData)
-                );
-                require(success, "Call failed");
-            }
+            bytes memory payload = abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData);
+            (bool ok, ) = _invokeCommand(cmds[i], payload);
+            require(ok);
         }
     }
 
     function runHooks_AfterDonate(uint256 poolId, bytes32 hookPath, address sender, PoolKey calldata key, uint256 a, uint256 b, bytes calldata hookData) internal {
         Command[] storage cmds = poolCommands[poolId][hookPath];
         for (uint i = 0; i < cmds.length; i++) {
-            bool success;
-            if (cmds[i].callType == CallType.Delegate) {
-                (success, ) = cmds[i].target.delegatecall(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData)
-                );
-                require(success, "Delegatecall failed");
-            } else {
-                (success, ) = cmds[i].target.call(
-                    abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData)
-                );
-                require(success, "Call failed");
-            }
+            bytes memory payload = abi.encodeWithSelector(cmds[i].selector, sender, key, a, b, hookData);
+            (bool ok, ) = _invokeCommand(cmds[i], payload);
+            require(ok);
         }
     }
 
-    // Batch run of Command[] for setup.
-    // Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
-    // For backward compatibility with legacy command implementations that expect a trailing `bytes`,
-    // commands will be invoked with a single empty `bytes` parameter.
-    function runCommandBatch(Command[] calldata commands) external {
-        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
-        bytes memory emptyBytes = "";
-        for (uint i = 0; i < commands.length; i++) {
-            bool success;
-            if (commands[i].callType == CallType.Delegate) {
-                (success, ) = commands[i].target.delegatecall(
-                    abi.encodeWithSelector(commands[i].selector, emptyBytes)
-                );
-                require(success, "Delegatecall failed");
-            } else if (commands[i].callType == CallType.Call) {
-                (success, ) = commands[i].target.call(
-                    abi.encodeWithSelector(commands[i].selector, emptyBytes)
-                );
-                require(success, "Call failed");
-            }
-        }
+        
+/// Centralized low-level invoke helper to reduce duplicated call/delegatecall bytecode.
+function _invokeCommand(Command storage cmd, bytes memory payload) internal returns (bool ok, bytes memory ret) {
+    if (cmd.callType == CallType.Delegate) {
+        (ok, ret) = cmd.target.delegatecall(payload);
+    } else {
+        (ok, ret) = cmd.target.call(payload);
     }
-    
+}
     // --- User Command Management ---
 
     
@@ -628,8 +538,8 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// @notice Replace the commands for a given pool and hookPath. Only callable by pool admin.
     /// This will fail if any existing locked/immutable command would be removed by the replacement.
     function setCommands(uint256 poolId, bytes32 hookPath, Command[] calldata cmds) external {
-        require(address(accessControl) != address(0), "AccessControl not configured");
-        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
+        require(address(accessControl) != address(0));
+        require(accessControl.getPoolAdmin(poolId) == msg.sender);
     
         // Ensure we do not remove any command that is locked via per-command lock or originated from an immutable block
         Command[] storage existing = poolCommands[poolId][hookPath];
@@ -643,7 +553,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
                         break;
                     }
                 }
-                require(found, "MasterControl: cannot remove locked command");
+                require(found);
             }
     
             // provenance-based immutability
@@ -656,7 +566,7 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
                         break;
                     }
                 }
-                require(found2, "MasterControl: cannot remove command from immutable block");
+                require(found2);
             }
         }
     
@@ -685,14 +595,14 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// @notice Clear commands for a given pool/hookPath. Only callable by pool admin.
     /// Will revert if any existing command is locked for this pool (either per-command or by originating immutable block).
     function clearCommands(uint256 poolId, bytes32 hookPath) external {
-        require(address(accessControl) != address(0), "AccessControl not configured");
-        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
+        require(address(accessControl) != address(0));
+        require(accessControl.getPoolAdmin(poolId) == msg.sender);
     
         Command[] storage existing = poolCommands[poolId][hookPath];
         for (uint i = 0; i < existing.length; i++) {
-            require(!commandLockedForPool[poolId][hookPath][existing[i].target][existing[i].selector], "MasterControl: contains locked command");
+            require(!commandLockedForPool[poolId][hookPath][existing[i].target][existing[i].selector]);
             uint256 origin = commandOriginBlock[poolId][hookPath][existing[i].target][existing[i].selector];
-            require(!(origin != 0 && blockImmutable[origin]), "MasterControl: contains immutable block command");
+            require(!(origin != 0 && blockImmutable[origin]));
         }
     
         // Remove fee contributions from bookkeeping (best-effort)
@@ -713,17 +623,17 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     /// blockId is an arbitrary numeric id chosen by owner; each Command must include its hookPath.
     function createBlock(uint256 blockId, Command[] calldata commands, bool[] calldata immutableFlags, uint64 expiresAt) external {
-        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
-        require(!blockEnabled[blockId], "MasterControl: block exists");
-        require(commands.length > 0, "MasterControl: empty block");
-        require(commands.length <= MAX_COMMANDS_PER_BLOCK, "MasterControl: too many commands");
-        require(immutableFlags.length == commands.length, "MasterControl: immutableFlags length mismatch");
+        require(_isMasterAdmin(msg.sender));
+        require(!blockEnabled[blockId]);
+        require(commands.length > 0);
+        require(commands.length <= MAX_COMMANDS_PER_BLOCK);
+        require(immutableFlags.length == commands.length);
  
         // validate that each command's target is approved for its declared hookPath and push into storage
         for (uint i = 0; i < commands.length; i++) {
             bytes32 cmdHook = commands[i].hookPath;
-            require(cmdHook != bytes32(0), "MasterControl: command hookPath zero");
-            require(commandEnabled[cmdHook][commands[i].target], "MasterControl: command target not approved for hook");
+            require(cmdHook != bytes32(0));
+            require(commandEnabled[cmdHook][commands[i].target]);
             // push a copy into storage (preserve hookPath)
             blockCommands[blockId].push(
                 Command({
@@ -751,8 +661,8 @@ mapping(uint256 => mapping(bytes32 => mapping(address => mapping(bytes4 => uint2
 /// @notice Set block-level metadata after creating a block (immutable flag / conflict group).
 /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
 function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 conflictGroup) external {
-    require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
-    require(blockEnabled[blockId], "MasterControl: block not found");
+    require(_isMasterAdmin(msg.sender));
+    require(blockEnabled[blockId]);
     blockImmutable[blockId] = immutableForPools;
     blockConflictGroup[blockId] = conflictGroup;
 }
@@ -760,8 +670,8 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
     /// @notice Revoke a block so it cannot be applied in the future.
     /// Requires ROLE_MASTER when AccessControl is configured, otherwise legacy owner.
     function revokeBlock(uint256 blockId) external {
-        require(_isMasterAdmin(msg.sender), "MasterControl: not master admin");
-        require(blockEnabled[blockId], "MasterControl: block not found");
+        require(_isMasterAdmin(msg.sender));
+        require(blockEnabled[blockId]);
         blockEnabled[blockId] = false;
         delete blockCommands[blockId];
         blockExpiresAt[blockId] = 0;
@@ -772,37 +682,37 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
     /// For ALL_REQUIRED semantics, applying a block will set the pool's commands for the hookPath
     /// to be the ordered list of commands from the block once all commands are validated.
     function applyBlocksToPool(uint256 poolId, uint256[] calldata blockIds) external {
-        require(address(accessControl) != address(0), "AccessControl not configured");
-        require(accessControl.getPoolAdmin(poolId) == msg.sender, "MasterControl: not pool admin");
-        require(blockIds.length > 0, "MasterControl: no blocks");
+        require(address(accessControl) != address(0));
+        require(accessControl.getPoolAdmin(poolId) == msg.sender);
+        require(blockIds.length > 0);
 
         // Pre-validate all referenced blocks and commands before applying (fail early)
         uint256 totalCommands = 0;
         for (uint i = 0; i < blockIds.length; i++) {
             uint256 bId = blockIds[i];
-            require(blockEnabled[bId], "MasterControl: block disabled");
+            require(blockEnabled[bId]);
 
             // ensure not expired
             uint64 exp = blockExpiresAt[bId];
             if (exp != 0) {
-                require(exp >= uint64(block.timestamp), "MasterControl: block expired");
+                require(exp >= uint64(block.timestamp));
             }
 
             // conflict group validation: disallow applying a block whose conflictGroup is already active on the pool
             bytes32 cg = blockConflictGroup[bId];
             if (cg != bytes32(0)) {
-                require(!poolConflictActive[poolId][cg], "MasterControl: conflict group active");
+                require(!poolConflictActive[poolId][cg]);
             }
 
             Command[] storage cmds = blockCommands[bId];
-            require(cmds.length <= MAX_COMMANDS_PER_BLOCK, "MasterControl: block too large");
+            require(cmds.length <= MAX_COMMANDS_PER_BLOCK);
 
             for (uint j = 0; j < cmds.length; j++) {
                 bytes32 cmdHook = cmds[j].hookPath;
-                require(cmdHook != bytes32(0), "MasterControl: block command hookPath zero");
-                require(commandEnabled[cmdHook][cmds[j].target], "MasterControl: block contains unapproved command target");
+                require(cmdHook != bytes32(0));
+                require(commandEnabled[cmdHook][cmds[j].target]);
                 totalCommands++;
-                require(totalCommands <= MAX_APPLY_COMMANDS, "MasterControl: too many commands in apply");
+                require(totalCommands <= MAX_APPLY_COMMANDS);
             }
         }
 
@@ -915,46 +825,37 @@ function setBlockMetadata(uint256 blockId, bool immutableForPools, bytes32 confl
         return abi.decode(data, (uint256));
     }
     
-    /// @notice Return metadata for a whitelisted block (commands + metadata).
-    /// @dev Exposes blockCommands (internal) and related public metadata in a single call to reduce RPCs.
-    function getBlockMeta(uint256 blockId) external view returns (Command[] memory cmds, bool enabled, uint64 expiresAt, bool immutableForPools, bytes32 conflictGroup) {
-        Command[] storage internalCmds = blockCommands[blockId];
-        uint256 len = internalCmds.length;
-        cmds = new Command[](len);
-        for (uint256 i = 0; i < len; i++) {
-            cmds[i] = internalCmds[i];
-        }
+    /// @notice Return lightweight block metadata (without copying all commands).
+    /// @dev Use `getBlockCommandAt` to iterate commands by index if callers need full list.
+    function getBlockMetaSummary(uint256 blockId) external view returns (uint256 commandsLength, bool enabled, uint64 expiresAt, bool immutableForPools, bytes32 conflictGroup) {
+        commandsLength = blockCommands[blockId].length;
         enabled = blockEnabled[blockId];
         expiresAt = blockExpiresAt[blockId];
         immutableForPools = blockImmutable[blockId];
         conflictGroup = blockConflictGroup[blockId];
     }
     
-    /// @notice Return per-target fee bips for a pool in one call.
-    /// @dev Returns the list of active targets and their aggregated fee bips for the pool.
-    function getPoolCommandFees(uint256 poolId) external view returns (address[] memory targets, uint256[] memory feeBips) {
-        targets = poolCommandTargets[poolId];
-        feeBips = new uint256[](targets.length);
-        for (uint256 i = 0; i < targets.length; i++) {
-            feeBips[i] = poolCommandTargetFeeBips[poolId][targets[i]];
-        }
+    /// @notice Return a single command from an enabled block by index.
+    /// @dev This replaces bulk copying to save runtime bytecode size; callers can page via index.
+    function getBlockCommandAt(uint256 blockId, uint256 index) external view returns (bytes32 hookPath, address target, bytes4 selector, CallType callType) {
+        Command storage c = blockCommands[blockId][index];
+        return (c.hookPath, c.target, c.selector, c.callType);
     }
     
-    /// @notice Batch query whether specific (target,selector) pairs are locked for a pool and their origin block.
-    /// @dev Accepts parallel arrays of targets and selectors and returns matching arrays of flags/origins.
-    function getLockedAndProvenance(
-        uint256 poolId,
-        bytes32 hookPath,
-        address[] calldata targets,
-        bytes4[] calldata selectors
-    ) external view returns (bool[] memory locked, uint256[] memory originBlocks) {
-        require(targets.length == selectors.length, "Length mismatch");
-        uint256 len = targets.length;
-        locked = new bool[](len);
-        originBlocks = new uint256[](len);
-        for (uint256 i = 0; i < len; i++) {
-            locked[i] = commandLockedForPool[poolId][hookPath][targets[i]][selectors[i]];
-            originBlocks[i] = commandOriginBlock[poolId][hookPath][targets[i]][selectors[i]];
-        }
+    /// @notice Return active command targets for a pool.
+    /// @dev Use `getPoolCommandFeeBipsForTarget` to query fees per-target to avoid heavy batching in-contract.
+    function getPoolCommandTargets(uint256 poolId) external view returns (address[] memory targets) {
+        return poolCommandTargets[poolId];
+    }
+    
+    /// @notice Return aggregated fee bips for a single target in a pool.
+    function getPoolCommandFeeBipsForTarget(uint256 poolId, address target) external view returns (uint256 feeBips) {
+        return poolCommandTargetFeeBips[poolId][target];
+    }
+    
+    /// @notice Query whether a specific (target, selector) pair is locked for a pool and its origin block.
+    function getLockedAndProvenanceAt(uint256 poolId, bytes32 hookPath, address target, bytes4 selector) external view returns (bool locked, uint256 originBlock) {
+        locked = commandLockedForPool[poolId][hookPath][target][selector];
+        originBlock = commandOriginBlock[poolId][hookPath][target][selector];
     }
 }

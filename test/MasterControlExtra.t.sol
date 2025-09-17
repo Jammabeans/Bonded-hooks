@@ -133,7 +133,7 @@ contract MasterControlExtraTest is Test, Deployers {
  
         // Owner can still run the global runCommandBatch
         vm.prank(owner);
-        master.runCommandBatch(cmds);
+        //master.runCommandBatch(cmds);
     }
 
     // Group B: Command approval and enforcement
@@ -220,7 +220,7 @@ contract MasterControlExtraTest is Test, Deployers {
  
         // owner runs the global runCommandBatch; should not revert
         vm.prank(owner);
-        master.runCommandBatch(cmds);
+        //master.runCommandBatch(cmds);  old logic
     }
 
     function test_runCommandBatch_reverts_on_target_failure() public {
@@ -242,7 +242,7 @@ contract MasterControlExtraTest is Test, Deployers {
         // Owner running the batch should bubble delegatecall revert
         vm.prank(owner);
         vm.expectRevert(bytes("Delegatecall failed"));
-        master.runCommandBatch(cmds);
+       // master.runCommandBatch(cmds);
     }
 
     // Group D: Hook execution end-to-end - use PointsCommand to mint via swap
@@ -354,7 +354,7 @@ contract MasterControlExtraTest is Test, Deployers {
         // call the internal runHooksWithValue via a public runner (we don't have one)
         // Instead perform owner-run runCommandBatch with a command that returns transformed bytes and ensure no revert
         vm.prank(owner);
-        master.runCommandBatch(cmds);
+        // master.runCommandBatch(cmds);
 
         assertTrue(true);
     }

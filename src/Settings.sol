@@ -19,13 +19,27 @@ contract Settings {
  
     // default shares array
     Share[] internal defaultShares;
- 
+    
     // per-sender override shares
     mapping(address => Share[]) internal customShares;
     mapping(address => bool) public hasCustomShares;
- 
+    
     event DefaultSharesUpdated(address[] recipients, uint256[] weights);
     event CustomSharesUpdated(address indexed ownerAddr, address[] recipients, uint256[] weights);
+
+    // --- Generic settings maps for AVS configuration ---
+    mapping(bytes32 => uint256) public settingsUint;
+    mapping(bytes32 => int256) public settingsInt;
+
+    event SettingUintUpdated(bytes32 indexed key, uint256 value);
+    event SettingIntUpdated(bytes32 indexed key, int256 value);
+
+    // Hook refund tables (wei per invocation)
+    mapping(address => uint256) public globalHookRefund;
+    mapping(uint256 => mapping(address => uint256)) public perPoolHookRefund;
+
+    event GlobalHookRefundUpdated(address indexed hookAddress, uint256 weiPerCall);
+    event PoolHookRefundUpdated(uint256 indexed poolId, address indexed hookAddress, uint256 weiPerCall);
  
     /// @notice Initialize Settings with deployer as owner and set initial default split.
     /// @param gasBank address for GasBank share
@@ -143,5 +157,48 @@ contract Settings {
             weights[i] = defaultShares[i].weight;
         }
         return (recipients, weights);
+    }
+
+    /// @notice Admin: set a uint256 setting by key (key = keccak256("name"))
+    function setUintSetting(bytes32 key, uint256 value) external {
+        require(_isSettingsAdmin(msg.sender), "Settings: not admin");
+        settingsUint[key] = value;
+        emit SettingUintUpdated(key, value);
+    }
+
+    /// @notice Admin: set an int256 setting by key
+    function setIntSetting(bytes32 key, int256 value) external {
+        require(_isSettingsAdmin(msg.sender), "Settings: not admin");
+        settingsInt[key] = value;
+        emit SettingIntUpdated(key, value);
+    }
+
+    /// @notice Read helpers for settings
+    function getUint(bytes32 key) external view returns (uint256) {
+        return settingsUint[key];
+    }
+    function getInt(bytes32 key) external view returns (int256) {
+        return settingsInt[key];
+    }
+
+    /// @notice Admin: set global per-hook refund (wei per invocation)
+    function setGlobalHookRefund(address hookAddress, uint256 weiPerCall) external {
+        require(_isSettingsAdmin(msg.sender), "Settings: not admin");
+        globalHookRefund[hookAddress] = weiPerCall;
+        emit GlobalHookRefundUpdated(hookAddress, weiPerCall);
+    }
+
+    /// @notice Admin: set per-pool per-hook refund (overrides global)
+    function setPerPoolHookRefund(uint256 poolId, address hookAddress, uint256 weiPerCall) external {
+        require(_isSettingsAdmin(msg.sender), "Settings: not admin");
+        perPoolHookRefund[poolId][hookAddress] = weiPerCall;
+        emit PoolHookRefundUpdated(poolId, hookAddress, weiPerCall);
+    }
+
+    /// @notice Get effective hook refund for hook (checks per-pool override then global)
+    function getHookRefundFor(uint256 poolId, address hookAddress) external view returns (uint256) {
+        uint256 v = perPoolHookRefund[poolId][hookAddress];
+        if (v != 0) return v;
+        return globalHookRefund[hookAddress];
     }
 }

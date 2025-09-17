@@ -38,85 +38,126 @@ contract DeployScript is Script {
 
     function run() external returns (address [] memory) {
         vm.startBroadcast();
-
         require(address(manager) != address(0), "DeployScript: manager not set");
-
-        // 2) Core wiring contracts
+ 
+        // Deploy core contracts (AccessControl, PoolLaunchPad, MasterControl)
+        (AccessControl accessControl, PoolLaunchPad poolLaunchPad, MasterControl masterControl) = _deployCore();
+  
+        // Deploy platform contracts and wire roles (returns array of platform addresses to avoid stack-too-deep)
+        address[] memory platformAddrs = _deployPlatformAndWire(accessControl, poolLaunchPad, masterControl);
+  
+        // Collect addresses into array (keeps locals scoped small)
+        address[] memory addrs = new address[](16);
+        addrs[0] = address(manager);
+        addrs[1] = address(accessControl);
+        addrs[2] = address(poolLaunchPad);
+        addrs[3] = address(masterControl);
+        // platformAddrs order: FeeCollector, GasBank, DegenPool, Settings, ShareSplitter, Bonding, MockAVS, PrizeBox, Shaker, PointsCommand, BidManager
+        for (uint i = 0; i < platformAddrs.length && i < 11; i++) {
+            addrs[4 + i] = platformAddrs[i];
+        }
+        addrs[15] = address(0);
+ 
+        accessControl.registerDeployedContracts(addrs);
+ 
+        // Build JSON artifact for CI / helper scripts and print it to stdout.
+        // vm.writeFile can be restricted in some environments, so print JSON on stdout for external capture.
+        string memory json = _buildDeployJSON(addrs);
+        console.log(json);
+ 
+        vm.stopBroadcast();
+        return addrs;
+    }
+ 
+    // Split the big deployment into smaller internal helpers to avoid stack-too-deep.
+    function _deployCore() internal returns (AccessControl, PoolLaunchPad, MasterControl) {
         AccessControl accessControl = new AccessControl();
         PoolLaunchPad poolLaunchPad = new PoolLaunchPad(manager, accessControl);
-
-        // 3) Deploy MasterControl using helper that mines a salt and performs CREATE2 so its address encodes ALL_HOOK_MASK
-        // Pass accessControl into the helper so the Create2Factory can set it atomically during deployment.
         MasterControl masterControl = _deployMasterControl(manager, accessControl);
- 
-        // Configure access control -> pool launchpad so launchpad can register initial pool admins
         accessControl.setPoolLaunchPad(address(poolLaunchPad));
-
-        // 4) Deploy platform utility contracts (pass AccessControl so contracts use ACL)
+        return (accessControl, poolLaunchPad, masterControl);
+    }
+ 
+    function _deployPlatformAndWire(
+        AccessControl accessControl,
+        PoolLaunchPad poolLaunchPad,
+        MasterControl masterControl
+    ) internal returns (address[] memory) {
+        // Deploy platform contracts and wire them up. Return an array of addresses in the expected order:
+        // [FeeCollector, GasBank, DegenPool, Settings, ShareSplitter, Bonding, MockAVS, PrizeBox, Shaker, PointsCommand, BidManager]
         FeeCollector feeCollector = new FeeCollector(accessControl);
         GasBank gasBank = new GasBank(accessControl);
         DegenPool degenPool = new DegenPool(accessControl);
- 
-        // 5) BidManager (deploy early so AVS can interact)
         BidManager bidManager = new BidManager(accessControl);
- 
-        // 6) Settings requires gasBank, degenPool, feeCollector and AccessControl
         Settings settings = new Settings(address(gasBank), address(degenPool), address(feeCollector), accessControl);
- 
-        // 7) ShareSplitter uses Settings and AccessControl
         ShareSplitter shareSplitter = new ShareSplitter(address(settings), accessControl);
- 
-        // 8) Bonding (use AccessControl)
         Bonding bonding = new Bonding(accessControl);
-
-        // 9) Deploy MockAVS (tests rely on AVS behavior beyond PrizeBox/Shaker)
         MockAVS mockAvs = new MockAVS();
 
-        // 10) Wire GasBank / FeeCollector / ShareSplitter / Bonding
-        // Grant the ACL roles to the externally-signed EOA (the broadcast sender) so subsequent config calls succeed.
+        // Grant ACL roles to the externally-signed EOA (tx.origin) so subsequent config calls succeed.
         accessControl.grantRole(gasBank.ROLE_GAS_BANK_ADMIN(), tx.origin);
         accessControl.grantRole(feeCollector.ROLE_FEE_COLLECTOR_ADMIN(), tx.origin);
         accessControl.grantRole(degenPool.ROLE_DEGEN_ADMIN(), tx.origin);
         accessControl.grantRole(bidManager.ROLE_BID_MANAGER_ADMIN(), tx.origin);
         accessControl.grantRole(shareSplitter.ROLE_SHARE_ADMIN(), tx.origin);
-        // Bonding needs admin/publisher/withdrawer roles so DeployScript (EOA) can configure and initialize Bonding.
         accessControl.grantRole(bonding.ROLE_BONDING_ADMIN(), tx.origin);
         accessControl.grantRole(bonding.ROLE_BONDING_PUBLISHER(), tx.origin);
         accessControl.grantRole(bonding.ROLE_BONDING_WITHDRAWER(), tx.origin);
- 
+
         gasBank.setShareSplitter(address(shareSplitter));
         feeCollector.setSettings(address(settings));
- 
-        // Grant settlement roles to MockAVS so it can call BidManager/DegenPool operations
+
         bidManager.setSettlementRole(address(mockAvs), true);
         degenPool.setSettlementRole(address(mockAvs), true);
- 
-        // Configure Bonding permissions (deployer is owner)
+
         bonding.setAuthorizedPublisher(address(masterControl), true);
         bonding.setAuthorizedWithdrawer(address(gasBank), true);
         bonding.setAuthorizedWithdrawer(address(shareSplitter), true);
 
-        // 11) PrizeBox & Shaker (pass mockAvs as the AVS address) and include AccessControl
         PrizeBox prizeBox = new PrizeBox(accessControl, address(mockAvs));
         Shaker shaker = new Shaker(accessControl, address(shareSplitter), address(prizeBox), address(mockAvs));
-        // Grant PrizeBox/Shaker admin roles to the broadcast EOA (tx.origin) so setup calls succeed.
         accessControl.grantRole(prizeBox.ROLE_PRIZEBOX_ADMIN(), tx.origin);
         accessControl.grantRole(shaker.ROLE_SHAKER_ADMIN(), tx.origin);
-        // ensure PrizeBox knows the Shaker
         prizeBox.setShaker(address(shaker));
 
-        // 12) PointsCommand (delegatecall target)
         PointsCommand pointsCommand = new PointsCommand();
-        // Ensure the broadcast EOA holds ROLE_MASTER so master-level setup calls succeed in this run.
         accessControl.grantRole(masterControl.ROLE_MASTER(), tx.origin);
-        // Approve the command for a representative hookPath (tests will compute actual hookPaths per-pool).
         masterControl.approveCommand(bytes32(0), address(pointsCommand), "PointsCommand");
 
-        
-
-        // Build JSON artifact via helper to avoid "stack too deep"
+        address[] memory out = new address[](11);
+        out[0] = address(feeCollector);
+        out[1] = address(gasBank);
+        out[2] = address(degenPool);
+        out[3] = address(settings);
+        out[4] = address(shareSplitter);
+        out[5] = address(bonding);
+        out[6] = address(mockAvs);
+        out[7] = address(prizeBox);
+        out[8] = address(shaker);
+        out[9] = address(pointsCommand);
+        out[10] = address(bidManager);
+        return out;
+    }
+ 
+    function _collectAddresses(
+        IPoolManager _manager,
+        AccessControl accessControl,
+        PoolLaunchPad poolLaunchPad,
+        MasterControl masterControl,
+        FeeCollector feeCollector,
+        GasBank gasBank,
+        DegenPool degenPool,
+        Settings settings,
+        ShareSplitter shareSplitter,
+        Bonding bonding,
+        PrizeBox prizeBox,
+        Shaker shaker,
+        PointsCommand pointsCommand,
+        BidManager bidManager,
+        MockAVS mockAvs
+    ) internal pure returns (address[] memory) {
         address[] memory addrs = new address[](16);
-        addrs[0] = address(manager);
+        addrs[0] = address(_manager);
         addrs[1] = address(accessControl);
         addrs[2] = address(poolLaunchPad);
         addrs[3] = address(masterControl);
@@ -127,26 +168,20 @@ contract DeployScript is Script {
         addrs[8] = address(shareSplitter);
         addrs[9] = address(bonding);
         addrs[10] = address(prizeBox);
-        addrs[11] = address(shaker);    
+        addrs[11] = address(shaker);
         addrs[12] = address(pointsCommand);
         addrs[13] = address(bidManager);
         addrs[14] = address(mockAvs);
-        // reserved slot
         addrs[15] = address(0);
-
-        accessControl.registerDeployedContracts(addrs);
-
-        vm.stopBroadcast();
-
         return addrs;
     }
-
-    
+      
 
     /* ========== Internal helpers ========== */
     /// @notice Mine a salt and deploy MasterControl with CREATE2 so the deployed address encodes Hooks.ALL_HOOK_MASK.
     /// Uses an internal Create2Factory deployed in-line as the CREATE2 deployer so this works on any chain.
     /// The factory will call setAccessControl(...) on the deployed MasterControl atomically so no owner transfer is needed.
+    /// If the predicted address already contains code (previous run), this helper will reuse it instead of re-deploying.
     function _deployMasterControl(IPoolManager _manager, AccessControl _accessControl) internal returns (MasterControl) {
         bytes memory ctorArgs = abi.encode(_manager);
         bytes memory creation = type(MasterControl).creationCode;
@@ -155,18 +190,28 @@ contract DeployScript is Script {
         Create2Factory cf = new Create2Factory();
         address deployer = address(cf);
  
-        // Find a salt such that CREATE2(deployer, salt, creationWithArgs) yields an address with the hook flags.
-        (address predicted, bytes32 salt) = HookMiner.find(deployer, uint160(Hooks.ALL_HOOK_MASK), creation, ctorArgs);
- 
+        // For CI/local convenience we may hardcode a salt instead of mining one every run.
+        // Using a fixed salt avoids mismatches across restarts of ephemeral nodes (anvil) that reuse accounts/nonces.
+        // Hardcoded salt chosen from prior successful run:
         bytes memory creationWithArgs = abi.encodePacked(creation, ctorArgs);
+        bytes32 salt = 0x00000000000000000000000000000000000000000000000000000000000048c9;
+        // Compute the expected CREATE2 address for this deployer/salt/initCode
+        address predicted = cf.computeAddress(deployer, salt, keccak256(creationWithArgs));
+        // If the predicted address already has code, reuse it instead of deploying.
+        if (predicted.code.length != 0) {
+            return MasterControl(predicted);
+        }
  
-        // Use the factory to perform the CREATE2 deployment (factory will deploy with its own address as deployer),
-        // and have the factory immediately call setAccessControl on the deployed MasterControl so no ownership transfer is required.
+        // Use the factory to perform the CREATE2 deployment (factory will deploy with its own address as deployer).
+        // Do the post-deploy initialization via the factory.exec() call so it's a separate call from deploy.
         bytes memory setAclData = abi.encodeWithSignature("setAccessControl(address)", address(_accessControl));
-        (address masterAddr, bytes memory ret) = cf.deployAndCall(creationWithArgs, salt, predicted, setAclData);
- 
-        require(masterAddr != address(0), "MasterControl: CREATE2 failed");
+        address masterAddr = cf.deploy(creationWithArgs, salt);
+        if (masterAddr == address(0)) revert("MasterControl: CREATE2 failed");
         require(masterAddr == predicted, "MasterControl: address mismatch");
+ 
+        // Execute setAccessControl from the factory context so owner check (owner==factory) succeeds.
+        (bool ok, bytes memory ret) = cf.exec(masterAddr, setAclData);
+        require(ok, "Create2Factory: exec setAccessControl failed");
  
         return MasterControl(masterAddr);
     }

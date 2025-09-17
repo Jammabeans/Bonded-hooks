@@ -5,6 +5,8 @@ pragma solidity ^0.8.20;
 /// The deployer exposes functions to perform CREATE2 and then optionally execute calls from the deployer context.
 contract Create2Factory {
     event Deployed(address indexed addr, bytes32 indexed salt);
+    /// Emitted with the runtime code size of the deployed contract (helps diagnose Create2 failures).
+    event DeployedWithCode(address indexed addr, bytes32 indexed salt, uint256 codeSize);
 
     /// @notice Deploy `bytecode` using CREATE2 with `salt`.
     /// @param bytecode Creation code (including constructor args) to deploy.
@@ -16,15 +18,39 @@ contract Create2Factory {
             addr := create2(0, add(bytecode, 0x20), mload(bytecode), salt)
         }
         require(addr != address(0), "Create2Factory: create2 failed");
+
+        // Query code size to help diagnose EIP-170 / contract-size issues.
+        uint256 size;
+        assembly { size := extcodesize(addr) }
+
         emit Deployed(addr, salt);
+        emit DeployedWithCode(addr, salt, size);
     }
 
-    /// @notice Deploy `bytecode` using CREATE2 with `salt`, then immediately call `target` with `data` using this contract as msg.sender.
-    /// Useful to perform owner-only initializations on the deployed contract.
-    function deployAndCall(bytes memory bytecode, bytes32 salt, address target, bytes calldata data) external returns (address addr, bytes memory ret) {
+    /// @notice Deploy `bytecode` using CREATE2 with `salt`, then immediately call the deployed contract with `data`
+    /// using this contract as msg.sender. `expected` may be provided (predicted address) for sanity-checks;
+    /// if non-zero it's validated against the actual deployed address.
+    function deployAndCall(bytes memory bytecode, bytes32 salt, address expected, bytes calldata data) external returns (address addr, bytes memory ret) {
         addr = deploy(bytecode, salt);
-        (bool ok, bytes memory r) = target.call(data);
-        require(ok, "Create2Factory: init call failed");
+
+        // Call the actual deployed address (safer than calling a predicted address supplied by the caller).
+        (bool ok, bytes memory r) = addr.call(data);
+
+        // If the init call failed, bubble up the revert reason when present so callers see the exact revert.
+        if (!ok) {
+            if (r.length > 0) {
+                assembly {
+                    revert(add(r, 32), mload(r))
+                }
+            }
+            revert("Create2Factory: init call failed");
+        }
+
+        // If the caller provided an expected (predicted) address, sanity-check it matches the deployed addr.
+        if (expected != address(0) && expected != addr) {
+            revert("Create2Factory: address mismatch");
+        }
+
         ret = r;
     }
 
@@ -36,5 +62,5 @@ contract Create2Factory {
     /// @notice Compute the CREATE2 address for given parameters.
     function computeAddress(address deployer, bytes32 salt, bytes32 initCodeHash) external pure returns (address) {
         return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), deployer, salt, initCodeHash)))));
-    }    
+    }
 }
