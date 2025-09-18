@@ -1,6 +1,9 @@
 import * as dotenv from "dotenv";
 dotenv.config();
 
+// AVSAllowlist helper contract address (optional — if set, operator will check allowlist before unsealing)
+const AVS_ALLOWLIST_ADDRESS = process.env.AVS_ALLOWLIST_ADDRESS || undefined;
+
 // Dynamically require `ethers` so Jest module mocks (jest.doMock('ethers', ...))
 // can correctly intercept the module during tests. Using runtime require also
 // avoids issues when TypeScript can't resolve the module in test runners.
