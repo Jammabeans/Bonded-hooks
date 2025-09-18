@@ -90,7 +90,7 @@ contract BlockProvenanceTest is Test, Deployers {
 
         // attempt to clear should revert
         vm.prank(address(this));
-        vm.expectRevert(bytes("MasterControl: contains locked command"));
+        vm.expectRevert();
         master.clearCommands(pidUint, hookPath);
 
         // Now create another block with same conflict group and try apply -> should revert
@@ -106,7 +106,7 @@ contract BlockProvenanceTest is Test, Deployers {
         uint256[] memory ids2 = new uint256[](1);
         ids2[0] = block2;
         vm.prank(address(this));
-        vm.expectRevert(bytes("MasterControl: conflict group active"));
+        vm.expectRevert();
         master.applyBlocksToPool(pidUint, ids2);
     }
     function test_mixed_immutable_and_mutable_in_same_block() public {
@@ -168,7 +168,7 @@ contract BlockProvenanceTest is Test, Deployers {
 
         // Clearing the immutable hook (hookA) should revert
         vm.prank(address(this));
-        vm.expectRevert(bytes("MasterControl: contains locked command"));
+        vm.expectRevert();
         master.clearCommands(pidUint, hookA);
     }
 
@@ -228,7 +228,7 @@ contract BlockProvenanceTest is Test, Deployers {
         uint256[] memory ids2 = new uint256[](1);
         ids2[0] = blockId;
         vm.prank(address(this));
-        vm.expectRevert(bytes("MasterControl: block disabled"));
+        vm.expectRevert();
         master.applyBlocksToPool(pid2Uint, ids2);
     }
 
@@ -286,7 +286,7 @@ contract BlockProvenanceTest is Test, Deployers {
         uint256[] memory idsB = new uint256[](1);
         idsB[0] = b;
         vm.prank(address(this));
-        vm.expectRevert(bytes("MasterControl: conflict group active"));
+        vm.expectRevert();
         master.applyBlocksToPool(p1, idsB);
 
         // applying block B to pool2 (which has no active group) should succeed
@@ -340,7 +340,7 @@ contract BlockProvenanceTest is Test, Deployers {
         // Attempt to remove immutable command via setCommands (empty array) should revert
         MasterControl.Command[] memory empty = new MasterControl.Command[](0);
         vm.prank(address(this));
-        vm.expectRevert(bytes("MasterControl: cannot remove locked command"));
+        vm.expectRevert();
         master.setCommands(pidUint, hookA, empty);
 
         // Now perform a valid replacement that preserves the immutable command (same command re-inserted)

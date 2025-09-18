@@ -31,8 +31,8 @@ const PRIZEBOX_ABI = [
   "function ownerOf(uint256) view returns (address)"
 ];
 
-const shaker = new ethers.Contract(shakerAddr, SHAKER_ABI, wallet);
-const prizeBox = prizeBoxAddr ? new ethers.Contract(prizeBoxAddr, PRIZEBOX_ABI, wallet) : null;
+const shaker: any = new ethers.Contract(shakerAddr, SHAKER_ABI, wallet);
+const prizeBox: any = prizeBoxAddr ? new ethers.Contract(prizeBoxAddr, PRIZEBOX_ABI, wallet) : null;
 
 // env lists converted to bigint arrays
 const candidatePools: bigint[] = (process.env.CANDIDATE_POOLS || "")

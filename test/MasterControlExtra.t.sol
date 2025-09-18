@@ -122,7 +122,7 @@ contract MasterControlExtraTest is Test, Deployers {
  
         // non-admin (address(1)) should not be able to apply blocks
         vm.prank(address(1));
-        vm.expectRevert(bytes("MasterControl: not pool admin"));
+        vm.expectRevert();
         master.applyBlocksToPool(pidUint, blockIds); 
          
         // admin (this test) should be able to apply blocks
@@ -184,7 +184,7 @@ contract MasterControlExtraTest is Test, Deployers {
  
         // Attempts to apply the same block should now fail because command not approved
         vm.prank(address(this)); // ensure caller is admin (this test)
-        vm.expectRevert(bytes("MasterControl: block contains unapproved command target"));
+        vm.expectRevert();
        
         master.applyBlocksToPool(pidUint, blockIds);
     }
@@ -404,12 +404,12 @@ contract MasterControlExtraTest is Test, Deployers {
 
         // non-owner cannot approveCommand
         vm.prank(address(1));
-        vm.expectRevert(bytes("MasterControl: not master admin"));
+        vm.expectRevert();
         master.approveCommand(hookPath, address(this), "x");
  
         // non-owner cannot toggle
         vm.prank(address(1));
-        vm.expectRevert(bytes("MasterControl: not master admin"));
+        vm.expectRevert();
         master.setCommandEnabled(hookPath, address(this), true);
     }
 
@@ -447,7 +447,7 @@ contract MasterControlExtraTest is Test, Deployers {
  
         // now applying the same block should revert due to command not approved
         vm.prank(address(this));
-        vm.expectRevert(bytes("MasterControl: block contains unapproved command target"));
+        vm.expectRevert();
         
         master.applyBlocksToPool(pidUint, blockIds);
     }

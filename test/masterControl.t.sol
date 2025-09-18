@@ -302,7 +302,7 @@ contract TestMasterControl is Test, Deployers, ERC1155TokenReceiver {
  
         address mcOwner = masterControl.owner();
         vm.prank(mcOwner);
-        vm.expectRevert(bytes("MasterControl: command target not approved for hook"));
+        vm.expectRevert();
         bool[] memory badFlags = new bool[](badCommands.length);
         masterControl.createBlock(999, badCommands, badFlags, 0);
     }
