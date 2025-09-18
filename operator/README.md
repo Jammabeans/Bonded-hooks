@@ -131,3 +131,46 @@ Notes and recommendations
 - The Shaker AVS uses deterministic seed-based selection helpers in [`Bonded-hooks/operator/shakerProcessor.ts:1`](Bonded-hooks/operator/shakerProcessor.ts:1) so behavior can be reproduced for testing if a fixed seed is provided.
 - For integration testing, run the repository's `integration/run-full-local.sh` helper which deploys the system with anvil and can be used alongside the operator scripts.
 - Add or tune candidate pools/boxes and intervals to control frequency and scope of automated rounds.
+
+## COFHE-enabled Degen AVS (prototype)
+
+A COFHE-enabled variant of the Degen AVS has been added as a prototype to demonstrate how encrypted bids can be read by an off-chain AVS and matched without exposing plaintext on-chain.
+
+Key new files (cloned; original code unchanged)
+- [`Bonded-hooks/operator/DegenAVS_COFHE.ts`](Bonded-hooks/operator/DegenAVS_COFHE.ts:1) — TypeScript AVS operator adapted for COFHE:
+  - Dynamically requires `cofhejs` and `ethers` so Jest mocks work.
+  - Exports a pure helper `matchBiddersFromInfos(...)` for unit testing.
+  - Implements `readEncryptedBidPlain(...)` to unseal ciphertexts (via `cofhejs.unseal`) and `handlePoolRebateReady(...)` which performs matching and (optionally) calls settlement.
+- [`Bonded-hooks/src/BidManagerCofhe.sol`](Bonded-hooks/src/BidManagerCofhe.sol:1) — Solidity prototype showing how to store encrypted bid fields using COFHE types (`euint*`, `eaddress`) and expose `getBidEncrypted(...)`.
+- Tests:
+  - Unit tests for the pure matcher: [`Bonded-hooks/operator/__tests__/DegenAVS_COFHE.test.ts`](Bonded-hooks/operator/__tests__/DegenAVS_COFHE.test.ts:1)
+  - Integration-style tests that mock both cofhejs and ethers: [`Bonded-hooks/operator/__tests__/integration_DegenAVS_COFHE.test.ts`](Bonded-hooks/operator/__tests__/integration_DegenAVS_COFHE.test.ts:1)
+  - Jest mock for cofhejs: [`Bonded-hooks/operator/__mocks__/cofhejs.js`](Bonded-hooks/operator/__mocks__/cofhejs.js:1)
+
+How it works (local/dry-run)
+- The operator reads encrypted bid ciphertexts from the COFHE BidManager (`getBidEncrypted`) and uses `cofhejs.unseal(...)` (or your runtime) to obtain plaintext values off-chain.
+- Matching proceeds the same as the original AVS, then:
+  - In dry-run mode the operator logs planned point mints and settlement payloads.
+  - In LIVE mode (set `LIVE=true`) the operator will call `finalizeEpochConsumeBids(...)` on the COFHE BidManager (the contract still expects plain consumedAmounts in this prototype).
+
+Environment variables (COFHE prototype)
+- `RPC_URL` — JSON-RPC endpoint (optional for dry-run unit tests; required for LIVE on-chain calls)
+- `PRIVATE_KEY` — AVS account private key (optional for dry-run)
+- `BID_MANAGER_COFHE_ADDRESS` — address of the COFHE BidManager contract (required for LIVE)
+- `CANDIDATE_BIDDERS` — comma-separated list of bidder addresses the AVS will consider (plain addresses)
+- `LIVE` — set to `true` to perform on-chain finalize; default is dry-run
+- `POINTS_PER_WEI` — optional override for points conversion (defaults to 1e12)
+
+Running tests
+- Unit tests (matching logic):
+  - cd Bonded-hooks/operator && npx jest __tests__/DegenAVS_COFHE.test.ts --runInBand --verbose
+- Integration tests (mock cofhejs + mock ethers):
+  - cd Bonded-hooks/operator && npx jest __tests__/integration_DegenAVS_COFHE.test.ts --runInBand --verbose
+
+Notes and recommendations
+- The Solidity prototype imports COFHE contracts (`@fhenixprotocol/cofhe-contracts`). Install the package in `Bonded-hooks` if you plan to compile the contract:
+  - cd Bonded-hooks && npm install @fhenixprotocol/cofhe-contracts cofhe-hardhat-plugin --save-dev
+- The operator package can use the real `cofhejs` runtime once installed:
+  - cd Bonded-hooks/operator && npm install cofhejs --save
+- Tests included use Jest module mocking; the operator loads cofhejs/ethers dynamically so tests can fully mock those modules.
+- These files are prototypes for experimentation and do not change the original AVS or BidManager implementations.

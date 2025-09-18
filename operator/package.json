@@ -9,6 +9,7 @@
     "test": "jest --colors"
   },
   "dependencies": {
+    "cofhejs": "^0.3.1",
     "dotenv": "^10.0.0",
     "ethers": "^6.13.2"
   },

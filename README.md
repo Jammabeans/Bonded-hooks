@@ -1,5 +1,11 @@
 # Bonded Hooks — Uniswap v4 Hook Management (UHI6 Hookathon)
 
+Where the AVS code lives (including COFHE prototype)
+- Rebate AVS runtime and helpers: [`Bonded-hooks/operator/DegenAVS.ts:1`](Bonded-hooks/operator/DegenAVS.ts:1) and [`Bonded-hooks/operator/processor.ts:1`](Bonded-hooks/operator/processor.ts:1)
+- Shaker AVS runtime and helpers: [`Bonded-hooks/operator/ShakerAVS.ts:1`](Bonded-hooks/operator/ShakerAVS.ts:1) and [`Bonded-hooks/operator/shakerProcessor.ts:1`](Bonded-hooks/operator/shakerProcessor.ts:1)
+- Operator README / run instructions: [`Bonded-hooks/operator/README.md:1`](Bonded-hooks/operator/README.md:1)
+- COFHE / Fhenix integration (prototype, sponsored by Fhenix): [`Bonded-hooks/operator/DegenAVS_COFHE.ts:1`](Bonded-hooks/operator/DegenAVS_COFHE.ts:1) and [`Bonded-hooks/src/BidManagerCofhe.sol:1`](Bonded-hooks/src/BidManagerCofhe.sol:1)
+
 Turn Uniswap v4 hooks into a marketplace:
 - Pool admins compose behavior from small "blocks" instead of writing Solidity.
 - The community can fund and bond new hooks; bonders earn a share of fees.
@@ -7,11 +13,6 @@ Turn Uniswap v4 hooks into a marketplace:
 
 What this is
 Bonded Hooks is an experimental research project that makes Uniswap v4 hooks easier to use and easier to fund. Pool admins pick and arrange small "blocks" (bundles of commands). Developers can publish commands and earn bounties; bonders provide funding that funds both developer rewards and gas backstops.
-
-Where the AVS code lives
-- Rebate AVS runtime and helpers: [`Bonded-hooks/operator/DegenAVS.ts:1`](Bonded-hooks/operator/DegenAVS.ts:1) and [`Bonded-hooks/operator/processor.ts:1`](Bonded-hooks/operator/processor.ts:1)
-- Shaker AVS runtime and helpers: [`Bonded-hooks/operator/ShakerAVS.ts:1`](Bonded-hooks/operator/ShakerAVS.ts:1) and [`Bonded-hooks/operator/shakerProcessor.ts:1`](Bonded-hooks/operator/shakerProcessor.ts:1)
-- Operator README / run instructions: [`Bonded-hooks/operator/README.md:1`](Bonded-hooks/operator/README.md:1)
 
 
 

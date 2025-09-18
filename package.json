@@ -1,0 +1,6 @@
+{
+  "devDependencies": {
+    "@fhenixprotocol/cofhe-contracts": "^0.0.13",
+    "cofhe-hardhat-plugin": "^0.3.1"
+  }
+}

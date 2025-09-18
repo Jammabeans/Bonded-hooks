@@ -1,4 +1,5 @@
 # Compiler files
+node_modules/
 cache/
 out/
 
@@ -13,5 +14,9 @@ docs/
 # Dotenv file
 .env
 
-# Ignore operator Node modules
+# Ignore node modules for operator and other subpackages
 operator/node_modules/
+react-frontend/node_modules/
+
+# Ignore lockfiles that may be generated locally for alternative package managers
+pnpm-lock.yaml
