@@ -74,6 +74,12 @@ contract DeployScript is Script {
         AccessControl accessControl = new AccessControl();
         PoolLaunchPad poolLaunchPad = new PoolLaunchPad(manager, accessControl);
         MasterControl masterControl = _deployMasterControl(manager, accessControl);
+        // MasterControl admin checks become role-based once AccessControl is set during _deployMasterControl().
+        // Grant ROLE_MASTER to the broadcaster before calling setPoolLaunchPad.
+        accessControl.grantRole(masterControl.ROLE_MASTER(), tx.origin);
+        // Ensure MasterControl accepts initialize callbacks from this launchpad.
+        // Without this, PoolManager.initialize -> hook beforeInitialize reverts in UI flows.
+        masterControl.setPoolLaunchPad(address(poolLaunchPad));
         accessControl.setPoolLaunchPad(address(poolLaunchPad));
         return (accessControl, poolLaunchPad, masterControl);
     }
@@ -190,17 +196,10 @@ contract DeployScript is Script {
         Create2Factory cf = new Create2Factory();
         address deployer = address(cf);
  
-        // For CI/local convenience we may hardcode a salt instead of mining one every run.
-        // Using a fixed salt avoids mismatches across restarts of ephemeral nodes (anvil) that reuse accounts/nonces.
-        // Hardcoded salt chosen from prior successful run:
         bytes memory creationWithArgs = abi.encodePacked(creation, ctorArgs);
-        bytes32 salt = 0x00000000000000000000000000000000000000000000000000000000000048c9;
-        // Compute the expected CREATE2 address for this deployer/salt/initCode
-        address predicted = cf.computeAddress(deployer, salt, keccak256(creationWithArgs));
-        // If the predicted address already has code, reuse it instead of deploying.
-        if (predicted.code.length != 0) {
-            return MasterControl(predicted);
-        }
+        // Mine a salt for THIS deployer so the resulting hook address has required v4 flags.
+        // A hardcoded salt is brittle because the deployer address (Create2Factory) can differ per run.
+        (address predicted, bytes32 salt) = HookMiner.find(deployer, uint160(Hooks.ALL_HOOK_MASK), creation, ctorArgs);
  
         // Use the factory to perform the CREATE2 deployment (factory will deploy with its own address as deployer).
         // Do the post-deploy initialization via the factory.exec() call so it's a separate call from deploy.

@@ -31,6 +31,14 @@ contract DeployCore is Script {
         // 2) Deploy MasterControl using the same CREATE2 helper logic as Deploy.s.sol
         MasterControl masterControl = _deployMasterControl(IPoolManager(mgr), accessControl);
 
+        // MasterControl admin checks become role-based once AccessControl is set during _deployMasterControl().
+        // Grant ROLE_MASTER to the broadcaster before calling setPoolLaunchPad.
+        accessControl.grantRole(masterControl.ROLE_MASTER(), tx.origin);
+
+        // Ensure MasterControl accepts initialize callbacks from this launchpad.
+        // Without this, PoolManager.initialize -> hook beforeInitialize reverts in UI flows.
+        masterControl.setPoolLaunchPad(address(poolLaunchPad));
+
         // Configure access control -> pool launchpad so launchpad can register initial pool admins
         accessControl.setPoolLaunchPad(address(poolLaunchPad));
 

@@ -88,80 +88,17 @@ else
   echo "Anvil restarted (PID $ANVIL_PID). Logs: $ROOT_DIR/anvil.log"
 fi
 
-# --------------- New staged deploy flow ---------------
+# --------------- Full deploy flow (single source of truth) ---------------
 cd "$ROOT_DIR"
 
-echo "Step 1: Deploy Uniswap v4 mocks (manager + routers)..."
-forge script script/DeployUniswapMocks.s.sol:DeployUniswapMocks --rpc-url $ANVIL_RPC --private-key "$ANVIL_PRIVATE_KEY" --broadcast -vvvv | tee /tmp/uniswap-mocks.txt
-UNISWAP_JSON=$(grep -o '{.*' /tmp/uniswap-mocks.txt | sed -n '$p' || true)
-if [ -z "$UNISWAP_JSON" ]; then
-  echo "Failed to extract JSON from /tmp/uniswap-mocks.txt; printing tail for debugging:"
-  tail -n 200 /tmp/uniswap-mocks.txt
+echo "Step 1: Full local deploy via DeployForLocal (Uniswap mocks + Deploy.s + AccessControl registration)..."
+forge script script/DeployForLocal.s.sol:DeployForLocal --rpc-url $ANVIL_RPC --private-key "$ANVIL_PRIVATE_KEY" --broadcast -vvvv | tee /tmp/full-deploy.txt
+FULL_JSON=$(grep -o '{.*' /tmp/full-deploy.txt | sed -n '$p' || true)
+if [ -z "$FULL_JSON" ]; then
+  echo "Failed to extract JSON from /tmp/full-deploy.txt; printing tail for debugging:"
+  tail -n 200 /tmp/full-deploy.txt
   exit 1
 fi
-echo "$UNISWAP_JSON" > /tmp/uniswap-mocks.json
-
-if command -v jq >/dev/null 2>&1; then
-  MANAGER_ADDR=$(jq -r '.PoolManager' /tmp/uniswap-mocks.json)
-else
-  MANAGER_ADDR=$(node -e "console.log(JSON.parse(process.argv[1]).PoolManager)" "$UNISWAP_JSON")
-fi
-echo "Manager deployed at: $MANAGER_ADDR"
-export MANAGER="$MANAGER_ADDR"
-
-echo "Step 2: Deploy core contracts (AccessControl, PoolLaunchPad, MasterControl) using MANAGER..."
-forge script script/DeployCore.s.sol:DeployCore --rpc-url $ANVIL_RPC --private-key "$ANVIL_PRIVATE_KEY" --broadcast -vvvv | tee /tmp/core-deploy.txt
-CORE_JSON=$(grep -o '{.*' /tmp/core-deploy.txt | sed -n '$p' || true)
-if [ -z "$CORE_JSON" ]; then
-  echo "Failed to extract JSON from /tmp/core-deploy.txt; printing tail for debugging:"
-  tail -n 200 /tmp/core-deploy.txt
-  exit 1
-fi
-echo "$CORE_JSON" > /tmp/core-deploy.json
-
-if command -v jq >/dev/null 2>&1; then
-  ACCESS_CONTROL_ADDRESS=$(jq -r '.AccessControl' /tmp/core-deploy.json)
-  POOL_LAUNCHPAD_ADDRESS=$(jq -r '.PoolLaunchPad' /tmp/core-deploy.json)
-  MASTER_CONTROL_ADDRESS=$(jq -r '.MasterControl' /tmp/core-deploy.json)
-else
-  ACCESS_CONTROL_ADDRESS=$(node -e "console.log(JSON.parse(process.argv[1]).AccessControl)" "$CORE_JSON")
-  POOL_LAUNCHPAD_ADDRESS=$(node -e "console.log(JSON.parse(process.argv[1]).PoolLaunchPad)" "$CORE_JSON")
-  MASTER_CONTROL_ADDRESS=$(node -e "console.log(JSON.parse(process.argv[1]).MasterControl)" "$CORE_JSON")
-fi
-
-echo "Core deployed: MANAGER=$MANAGER_ADDR, ACCESS_CONTROL=$ACCESS_CONTROL_ADDRESS, POOL_LAUNCHPAD=$POOL_LAUNCHPAD_ADDRESS, MASTER_CONTROL=$MASTER_CONTROL_ADDRESS"
-export ACCESS_CONTROL="$ACCESS_CONTROL_ADDRESS"
-export POOL_LAUNCHPAD="$POOL_LAUNCHPAD_ADDRESS"
-export MASTER_CONTROL="$MASTER_CONTROL_ADDRESS"
-
-echo "Step 3: Deploy platform contracts (split into two batches to avoid big single transactions)..."
-# Deploy main platform batch
-forge script script/DeployPlatform.s.sol:DeployPlatform --rpc-url $ANVIL_RPC --private-key "$ANVIL_PRIVATE_KEY" --broadcast -vvvv | tee /tmp/platform-deploy.txt
-PLAT_JSON=$(grep -o '{.*' /tmp/platform-deploy.txt | sed -n '$p' || true)
-if [ -z "$PLAT_JSON" ]; then
-  echo "Failed to extract JSON from /tmp/platform-deploy.txt; printing tail for debugging:"
-  tail -n 200 /tmp/platform-deploy.txt
-  exit 1
-fi
-echo "$PLAT_JSON" > /tmp/platform-deploy.json
-
-# Deploy final small batch (heavy or separate contracts)
-forge script script/DeployPlatformFinish.s.sol:DeployPlatformFinish --rpc-url $ANVIL_RPC --private-key "$ANVIL_PRIVATE_KEY" --broadcast -vvvv | tee /tmp/platform-finish.txt
-PLAT_FIN_JSON=$(grep -o '{.*' /tmp/platform-finish.txt | sed -n '$p' || true)
-if [ -z "$PLAT_FIN_JSON" ]; then
-  echo "Failed to extract JSON from /tmp/platform-finish.txt; printing tail for debugging:"
-  tail -n 200 /tmp/platform-finish.txt
-  exit 1
-fi
-echo "$PLAT_FIN_JSON" > /tmp/platform-finish.json
-
-# Merge core + platform + finish JSON into one canonical JSON
-if command -v jq >/dev/null 2>&1; then
-  FULL_JSON=$(jq -s '.[0] + .[1] + .[2]' /tmp/core-deploy.json /tmp/platform-deploy.json /tmp/platform-finish.json)
-else
-  FULL_JSON=$(node -e "const a=JSON.parse(process.argv[1]); const b=JSON.parse(process.argv[2]); const c=JSON.parse(process.argv[3]); console.log(JSON.stringify(Object.assign({}, a, b, c)))" "$CORE_JSON" "$PLAT_JSON" "$PLAT_FIN_JSON")
-fi
-
 echo "$FULL_JSON" > /tmp/full-deploy.json
 
 # Use jq if available, otherwise fall back to node for parsing JSON
@@ -224,10 +161,7 @@ echo "  GAS_BANK_ADDRESS=$GAS_BANK_ADDRESS"
 echo "  BID_MANAGER_ADDRESS=$BID_MANAGER_ADDRESS"
 echo "  DEGEN_POOL_ADDRESS=$DEGEN_POOL_ADDRESS"
 
-# extract addresses for next stages (already parsed above; echo for clarity)
-echo "Core parsed addresses present in /tmp/core-deploy.json"
-
-echo "Core deployed: MasterControl=$MASTER_CONTROL_ADDRESS, AccessControl=$ACCESS_CONTROL_ADDRESS, PoolLaunchPad=$POOL_LAUNCHPAD_ADDRESS"
+echo "Full deploy completed: MasterControl=$MASTER_CONTROL_ADDRESS, AccessControl=$ACCESS_CONTROL_ADDRESS, PoolLaunchPad=$POOL_LAUNCHPAD_ADDRESS"
 
 # save master control address for operator (keep original aside)
 export MASTER_CONTROL_ADDRESS_ORIG="$MASTER_CONTROL_ADDRESS"

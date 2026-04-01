@@ -47,12 +47,15 @@ contract DeployForLocal is Script {
         // set a protocol fee controller so manager isn't left unconfigured (use tx.origin)
         pm.setProtocolFeeController(tx.origin);
  
-        // Now run the project's DeployScript, passing the freshly deployed manager
-        // Deploy the helper DeployScript while broadcast is active so the contract is created,
-        // then stop the current broadcast so DeployScript.run() can safely call vm.startBroadcast().
+        // Stop broadcast before instantiating DeployScript so this large helper is NOT
+        // deployed on-chain (it can exceed EIP-170 code size limits).
+        vm.stopBroadcast();
+
+        // Now run the project's DeployScript, passing the freshly deployed manager.
+        // This executes as a local script object; DeployScript.run() starts its own broadcast
+        // for actual protocol deployments.
         DeployScript ds = new DeployScript();
         ds.setManager(address(manager));
-        vm.stopBroadcast();
         // DeployScript.run() will start its own broadcast; capture the returned addresses.
         address[] memory addrs = ds.run();
 
