@@ -14,6 +14,22 @@ Turn Uniswap v4 hooks into a marketplace:
 What this is
 Bonded Hooks is an experimental research project that makes Uniswap v4 hooks easier to use and easier to fund. Pool admins pick and arrange small "blocks" (bundles of commands). Developers can publish commands and earn bounties; bonders provide funding that funds both developer rewards and gas backstops.
 
+## Revival Status
+
+Bonded Hooks began as a UHI6 Hookathon project and won a $1,000 award. The project is now being revived with a focus on repo cleanup, reproducible tests, safer hook composition, deployment repair, and grant/audit readiness.
+
+Current technical baseline:
+- `forge test --skip script -vvv` passes with 117 Solidity tests.
+- `cd operator && npm run build` passes.
+- `cd operator && npm test` passes with 21 TypeScript/Jest tests.
+- Full `forge build` is currently blocked by deployment-script/compiler stack-depth issues.
+- The project is experimental, unaudited, and not mainnet-ready.
+
+See:
+- `GRANT_PLAN.md`
+- `ROADMAP.md`
+- `THREAT_MODEL.md`
+
 
 
 Who it's for
